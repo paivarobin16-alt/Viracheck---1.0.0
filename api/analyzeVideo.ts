@@ -1,10 +1,6 @@
 import OpenAI from "openai";
 
-type CachedValue = {
-  value: any;
-  expiresAt: number;
-};
-
+type CachedValue = { value: any; expiresAt: number };
 const CACHE = new Map<string, CachedValue>();
 
 function getCache(key: string) {
@@ -16,7 +12,6 @@ function getCache(key: string) {
   }
   return hit.value;
 }
-
 function setCache(key: string, value: any, ttlMs: number) {
   CACHE.set(key, { value, expiresAt: Date.now() + ttlMs });
 }
@@ -31,18 +26,12 @@ export default async function handler(req: any, res: any) {
     const client = new OpenAI({ apiKey });
 
     const { platform, duration, hook, description, frames, fingerprint } = req.body || {};
-
-    // ✅ IMPORTANTE: se por algum motivo não vier fingerprint, ainda funciona,
-    // mas NÃO usa cache (evita quebrar seu app).
-    const cacheKey =
-      typeof fingerprint === "string" && fingerprint.trim().length > 10
-        ? fingerprint.trim()
-        : null;
-
-    if (cacheKey) {
-      const cached = getCache(cacheKey);
-      if (cached) return res.status(200).json({ ...cached, cached: true });
+    if (!fingerprint || typeof fingerprint !== "string") {
+      return res.status(400).json({ error: "fingerprint obrigatório" });
     }
+
+    const cached = getCache(fingerprint);
+    if (cached) return res.status(200).json({ ...cached, cached: true });
 
     const framesArr: string[] = Array.isArray(frames) ? frames : [];
     const framesLimited = framesArr.slice(0, 6);
@@ -55,7 +44,7 @@ Você é especialista em vídeos virais (TikTok, Reels, Shorts).
 Analise com base no texto e nos FRAMES enviados.
 Responda em Português do Brasil.
 
-Retorne APENAS um JSON neste formato:
+Retorne APENAS um JSON no formato:
 {
   "score": 0,
   "strengths": [],
@@ -85,7 +74,6 @@ DADOS:
       model: "gpt-4o-mini-2024-07-18",
       input: [{ role: "user", content }],
       temperature: 0,
-
       text: {
         format: {
           type: "json_schema",
@@ -104,16 +92,7 @@ DADOS:
               cta: { type: "string" },
               frame_insights: { type: "array", items: { type: "string" } },
             },
-            required: [
-              "score",
-              "strengths",
-              "weaknesses",
-              "improvements",
-              "title",
-              "caption",
-              "cta",
-              "frame_insights",
-            ],
+            required: ["score", "strengths", "weaknesses", "improvements", "title", "caption", "cta", "frame_insights"],
           },
         },
       },
@@ -123,7 +102,7 @@ DADOS:
     const out = String(response.output_text || "").trim();
     const parsed = JSON.parse(out);
 
-    if (cacheKey) setCache(cacheKey, parsed, 7 * 24 * 60 * 60 * 1000); // 7 dias
+    setCache(fingerprint, parsed, 7 * 24 * 60 * 60 * 1000); // 7 dias
 
     return res.status(200).json({ ...parsed, cached: false });
   } catch (err: any) {
