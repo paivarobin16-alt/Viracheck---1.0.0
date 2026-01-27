@@ -32,11 +32,11 @@ export default async function handler(req: any, res: any) {
     const client = new OpenAI({ apiKey });
 
     const { platform, duration, hook, description, frames, fingerprint } = req.body || {};
+
     if (!fingerprint || typeof fingerprint !== "string") {
       return res.status(400).json({ error: "fingerprint obrigatório" });
     }
 
-    // ✅ devolve do cache (mesmo resultado)
     const cached = getCache(fingerprint);
     if (cached) {
       return res.status(200).json({ ...cached, cached: true });
@@ -122,7 +122,6 @@ DADOS:
     const out = String(response.output_text || "").trim();
     const parsed = JSON.parse(out);
 
-    // ✅ cache por 7 dias
     setCache(fingerprint, parsed, 7 * 24 * 60 * 60 * 1000);
 
     return res.status(200).json({ ...parsed, cached: false });
