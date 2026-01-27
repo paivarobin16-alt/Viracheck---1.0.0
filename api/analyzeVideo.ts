@@ -10,47 +10,21 @@ export default async function handler(req: any, res: any) {
     const client = new OpenAI({ apiKey });
 
     const { platform, duration, hook, description, frames } = req.body || {};
-
     const framesArr: string[] = Array.isArray(frames) ? frames : [];
-    const framesLimited = framesArr.slice(0, 6); // evita payload gigante
+    const framesLimited = framesArr.slice(0, 6);
 
-    const basePrompt = `
-Você é especialista em vídeos virais para TikTok, Instagram Reels e YouTube Shorts.
-Analise o vídeo com base no texto e nos FRAMES enviados (imagens do vídeo).
+    const prompt =
+      `Você é especialista em vídeos virais (TikTok, Reels, Shorts).\n` +
+      `Analise com base no texto e nos FRAMES (imagens) enviados.\n` +
+      `Responda seguindo o schema.\n\n` +
+      `DADOS:\n` +
+      `- Plataforma: ${platform ?? "Todas"}\n` +
+      `- Duração: ${Number(duration ?? 0)}s\n` +
+      `- Gancho: ${String(hook ?? "")}\n` +
+      `- Descrição: ${String(description ?? "")}\n`;
 
-Responda APENAS com um JSON válido (sem texto fora do JSON) no formato:
-{
-  "score": 0,
-  "strengths": [],
-  "weaknesses": [],
-  "improvements": [],
-  "title": "",
-  "caption": "",
-  "cta": "",
-  "frame_insights": []
-}
-
-Regras:
-- Português do Brasil
-- Score 0 a 100
-- Seja direto e prático
-- "frame_insights" deve citar elementos visuais percebidos nos frames (texto na tela, cenário, rosto, iluminação, etc.)
-`;
-
-    // Monta conteúdo multimodal (texto + imagens)
     const content: any[] = [
-      {
-        type: "input_text",
-        text: `${basePrompt}
-
-DADOS:
-- Plataforma: ${platform ?? "Todas"}
-- Duração: ${Number(duration ?? 0)}s
-- Gancho: ${String(hook ?? "")}
-- Descrição: ${String(description ?? "")}
-
-Agora analise os frames abaixo:`,
-      },
+      { type: "input_text", text: prompt },
       ...framesLimited.map((img) => ({
         type: "input_image",
         image_url: img, // data:image/jpeg;base64,...
@@ -58,35 +32,62 @@ Agora analise os frames abaixo:`,
       })),
     ];
 
-    // Responses API suporta texto + imagem como input :contentReference[oaicite:1]{index=1}
+    // ✅ Structured Outputs (schema) para garantir JSON válido
+    // Recomendado pela OpenAI; strict=true força aderência ao schema. :contentReference[oaicite:1]{index=1}
     const response = await client.responses.create({
-      model: "gpt-4o-mini",
-      input: [
-        {
-          role: "user",
-          content,
-        },
-      ],
-      temperature: 0.7,
+      // Use um modelo que suporte structured outputs; este é citado como compatível no anúncio. :contentReference[oaicite:2]{index=2}
+      model: "gpt-4o-mini-2024-07-18",
+      input: [{ role: "user", content }],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "viracheck_analysis",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              score: { type: "integer", minimum: 0, maximum: 100 },
+              strengths: { type: "array", items: { type: "string" } },
+              weaknesses: { type: "array", items: { type: "string" } },
+              improvements: { type: "array", items: { type: "string" } },
+              title: { type: "string" },
+              caption: { type: "string" },
+              cta: { type: "string" },
+              frame_insights: { type: "array", items: { type: "string" } }
+            },
+            required: [
+              "score",
+              "strengths",
+              "weaknesses",
+              "improvements",
+              "title",
+              "caption",
+              "cta",
+              "frame_insights"
+            ]
+          }
+        }
+      },
+      temperature: 0.7
     });
 
-    // A SDK retorna texto agregado em output_text (quando disponível).
+    // Respostas com structured outputs vêm como JSON confiável
     const text = (response as any).output_text?.trim?.() ?? "";
-
     let parsed: any;
     try {
       parsed = JSON.parse(text);
     } catch {
+      // fallback muito raro com schema, mas deixo por segurança
       parsed = {
         score: 50,
         strengths: [],
-        weaknesses: ["A IA não retornou JSON válido nesta tentativa."],
-        improvements: ["Tente novamente com uma descrição mais detalhada e frames mais nítidos."],
+        weaknesses: ["Falha ao parsear JSON (inesperado com schema)."],
+        improvements: ["Tente novamente."],
         title: "Sugestão de título",
         caption: "Sugestão de legenda",
         cta: "Sugestão de CTA",
         frame_insights: [],
-        raw: text,
       };
     }
 
