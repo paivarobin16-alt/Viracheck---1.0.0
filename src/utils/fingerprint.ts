@@ -10,16 +10,14 @@ export async function makeVideoFingerprint(params: {
   duration: number;
   hook: string;
   description: string;
-  frames: string[]; // data:image/jpeg;base64,...
+  frames: string[];
 }): Promise<string> {
-  // Importante: usar sempre os mesmos campos em ordem fixa
   const payload = JSON.stringify({
     v: 1,
     platform: params.platform,
     duration: params.duration,
     hook: params.hook.trim(),
     description: params.description.trim(),
-    // só um pedaço de cada frame já basta (reduz custo/latência)
     frames: params.frames.map((f) => f.slice(0, 2000)),
   });
 
