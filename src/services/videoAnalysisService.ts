@@ -7,6 +7,7 @@ export type VideoAnalysisResult = {
   caption: string;
   cta: string;
   frame_insights?: string[];
+  cached?: boolean;
 };
 
 export async function analyzeVideo(data: {
@@ -15,6 +16,7 @@ export async function analyzeVideo(data: {
   hook: string;
   description: string;
   frames: string[];
+  fingerprint: string;
 }): Promise<VideoAnalysisResult> {
   const res = await fetch("/api/analyzeVideo", {
     method: "POST",
