@@ -5,12 +5,12 @@ type CachedValue = {
   expiresAt: number;
 };
 
-// Cache em memória (por instância). Bom e rápido.
 const CACHE = new Map<string, CachedValue>();
 
 function getCache(key: string) {
   const hit = CACHE.get(key);
   if (!hit) return null;
+
   if (Date.now() > hit.expiresAt) {
     CACHE.delete(key);
     return null;
@@ -36,7 +36,7 @@ export default async function handler(req: any, res: any) {
       return res.status(400).json({ error: "fingerprint obrigatório" });
     }
 
-    // ✅ 1) Se já analisou esse vídeo, devolve o mesmo resultado
+    // ✅ devolve do cache (mesmo resultado)
     const cached = getCache(fingerprint);
     if (cached) {
       return res.status(200).json({ ...cached, cached: true });
@@ -79,11 +79,11 @@ DADOS:
       })),
     ];
 
-    // Request com schema (como você já estava usando)
     const request: any = {
       model: "gpt-4o-mini-2024-07-18",
       input: [{ role: "user", content }],
-      temperature: 0, // ajuda a reduzir variação também
+      temperature: 0,
+
       text: {
         format: {
           type: "json_schema",
@@ -122,7 +122,7 @@ DADOS:
     const out = String(response.output_text || "").trim();
     const parsed = JSON.parse(out);
 
-    // ✅ 2) Salva no cache por 7 dias (ajuste como quiser)
+    // ✅ cache por 7 dias
     setCache(fingerprint, parsed, 7 * 24 * 60 * 60 * 1000);
 
     return res.status(200).json({ ...parsed, cached: false });
