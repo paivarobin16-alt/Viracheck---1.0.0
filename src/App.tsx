@@ -1,5 +1,10 @@
-import Analyze from "./pages/Analyze";
+import React from "react";
+import ReactDOM from "react-dom/client";
+import App from "./App";
+import "./styles/app.css";
 
-export default function App() {
-  return <Analyze />;
-}
+ReactDOM.createRoot(document.getElementById("root")!).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
