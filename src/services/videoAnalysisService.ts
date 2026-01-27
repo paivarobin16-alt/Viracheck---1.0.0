@@ -6,7 +6,6 @@ export type VideoAnalysisResult = {
   title: string;
   caption: string;
   cta: string;
-  frame_insights?: string[];
   cached?: boolean;
 };
 
@@ -21,7 +20,7 @@ export async function analyzeVideo(data: {
   const res = await fetch("/api/analyzeVideo", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
+    body: JSON.stringify(data)
   });
 
   const json = await res.json().catch(() => ({}));
