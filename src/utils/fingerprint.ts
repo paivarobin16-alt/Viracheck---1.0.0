@@ -18,7 +18,7 @@ export async function makeVideoFingerprint(params: {
     duration: params.duration,
     hook: params.hook.trim(),
     description: params.description.trim(),
-    frames: params.frames.map((f) => f.slice(0, 2000)),
+    frames: params.frames.map((f) => f.slice(0, 2000))
   });
 
   return sha256(payload);
