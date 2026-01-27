@@ -2,14 +2,10 @@ import OpenAI from "openai";
 
 export default async function handler(req: any, res: any) {
   try {
-    if (req.method !== "POST") {
-      return res.status(405).json({ error: "Use POST" });
-    }
+    if (req.method !== "POST") return res.status(405).json({ error: "Use POST" });
 
     const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      return res.status(500).json({ error: "OPENAI_API_KEY não configurada no Vercel" });
-    }
+    if (!apiKey) return res.status(500).json({ error: "OPENAI_API_KEY não configurada no Vercel" });
 
     const client = new OpenAI({ apiKey });
 
@@ -21,82 +17,73 @@ export default async function handler(req: any, res: any) {
       {
         type: "input_text",
         text: `
-Você é especialista em vídeos virais para TikTok, Instagram Reels e YouTube Shorts.
+Você é especialista em vídeos virais (TikTok, Reels, Shorts).
 Analise com base no texto e nos FRAMES enviados.
-
+Responda em Português do Brasil.
+`.trim(),
+      },
+      {
+        type: "input_text",
+        text: `
 DADOS:
 - Plataforma: ${platform ?? "Todas"}
 - Duração: ${Number(duration ?? 0)} segundos
 - Gancho: ${String(hook ?? "")}
 - Descrição: ${String(description ?? "")}
-
-Responda APENAS com um JSON válido no formato:
-{
-  "score": 0,
-  "strengths": [],
-  "weaknesses": [],
-  "improvements": [],
-  "title": "",
-  "caption": "",
-  "cta": "",
-  "frame_insights": []
-}
 `.trim(),
       },
       ...framesLimited.map((img) => ({
         type: "input_image",
-        image_url: img,
+        image_url: img, // data:image/jpeg;base64,...
         detail: "low",
       })),
     ];
 
-    // ✅ IMPORTANTE: tipa como `any` para evitar TS2769 (overload)
+    // Tipado como any para evitar conflito de overload do TS
     const request: any = {
-      model: "gpt-4o-mini",
+      // Use um snapshot compatível com JSON Schema no Structured Outputs :contentReference[oaicite:2]{index=2}
+      model: "gpt-4o-mini-2024-07-18",
       input: [{ role: "user", content }],
+      temperature: 0.7,
 
-      // ✅ JSON schema no lugar certo (Responses API)
+      // ✅ FORMATO CERTO NO Responses API: text.format com name+schema :contentReference[oaicite:3]{index=3}
       text: {
         format: {
           type: "json_schema",
-          json_schema: {
-            name: "viracheck_analysis",
-            strict: true,
-            schema: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                score: { type: "integer", minimum: 0, maximum: 100 },
-                strengths: { type: "array", items: { type: "string" } },
-                weaknesses: { type: "array", items: { type: "string" } },
-                improvements: { type: "array", items: { type: "string" } },
-                title: { type: "string" },
-                caption: { type: "string" },
-                cta: { type: "string" },
-                frame_insights: { type: "array", items: { type: "string" } }
-              },
-              required: [
-                "score",
-                "strengths",
-                "weaknesses",
-                "improvements",
-                "title",
-                "caption",
-                "cta",
-                "frame_insights"
-              ]
-            }
-          }
-        }
+          name: "viracheck_analysis", // ✅ obrigatório (corrige seu erro 400)
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              score: { type: "integer", minimum: 0, maximum: 100 },
+              strengths: { type: "array", items: { type: "string" } },
+              weaknesses: { type: "array", items: { type: "string" } },
+              improvements: { type: "array", items: { type: "string" } },
+              title: { type: "string" },
+              caption: { type: "string" },
+              cta: { type: "string" },
+              frame_insights: { type: "array", items: { type: "string" } },
+            },
+            required: [
+              "score",
+              "strengths",
+              "weaknesses",
+              "improvements",
+              "title",
+              "caption",
+              "cta",
+              "frame_insights",
+            ],
+          },
+        },
       },
-
-      temperature: 0.7,
     };
 
     const response: any = await client.responses.create(request);
 
-    const text = String(response.output_text || "").trim();
-    const parsed = JSON.parse(text);
+    const out = String(response.output_text || "").trim();
+    const parsed = JSON.parse(out);
 
     return res.status(200).json(parsed);
   } catch (err: any) {
