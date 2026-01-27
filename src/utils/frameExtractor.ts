@@ -17,25 +17,29 @@ export async function extractFramesFromVideoFile(
   });
 
   const duration = video.duration || 0;
+
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas não suportado");
 
-  // Define tamanho mantendo proporção
-  const ratio = video.videoWidth ? video.videoHeight / video.videoWidth : 9 / 16;
-  canvas.width = Math.min(maxWidth, video.videoWidth || maxWidth);
-  canvas.height = Math.round(canvas.width * ratio);
+  const w = video.videoWidth || maxWidth;
+  const h = video.videoHeight || Math.round(maxWidth * (9 / 16));
+
+  const outW = Math.min(maxWidth, w);
+  const outH = Math.round(outW * (h / w));
+
+  canvas.width = outW;
+  canvas.height = outH;
+
+  const safeEnd = Math.max(0.2, duration - 0.2);
+  const timesBase = [0.5, 1.5, 3, 5, 7, 9];
+  const times = timesBase
+    .map((t) => Math.min(Math.max(t, 0.2), safeEnd))
+    .slice(0, frameCount);
 
   const frames: string[] = [];
 
-  // timestamps distribuídos (evita 0s e o fim)
-  const safeStart = Math.min(0.2, Math.max(0, duration * 0.05));
-  const safeEnd = Math.max(0, duration - 0.2);
-  const span = Math.max(0.1, safeEnd - safeStart);
-
-  for (let i = 0; i < frameCount; i++) {
-    const t = safeStart + (span * (i + 1)) / (frameCount + 1);
-
+  for (const t of times) {
     await new Promise<void>((resolve, reject) => {
       const onSeeked = () => {
         video.removeEventListener("seeked", onSeeked);
@@ -52,11 +56,9 @@ export async function extractFramesFromVideoFile(
     });
 
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
-    frames.push(dataUrl);
+    frames.push(canvas.toDataURL("image/jpeg", 0.8));
   }
 
   URL.revokeObjectURL(url);
   return { frames, duration };
 }
-
