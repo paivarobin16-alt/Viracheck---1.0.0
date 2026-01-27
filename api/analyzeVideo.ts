@@ -1,5 +1,27 @@
 import OpenAI from "openai";
 
+type CachedValue = {
+  value: any;
+  expiresAt: number;
+};
+
+// Cache em memória (por instância). Bom e rápido.
+const CACHE = new Map<string, CachedValue>();
+
+function getCache(key: string) {
+  const hit = CACHE.get(key);
+  if (!hit) return null;
+  if (Date.now() > hit.expiresAt) {
+    CACHE.delete(key);
+    return null;
+  }
+  return hit.value;
+}
+
+function setCache(key: string, value: any, ttlMs: number) {
+  CACHE.set(key, { value, expiresAt: Date.now() + ttlMs });
+}
+
 export default async function handler(req: any, res: any) {
   try {
     if (req.method !== "POST") return res.status(405).json({ error: "Use POST" });
@@ -9,7 +31,17 @@ export default async function handler(req: any, res: any) {
 
     const client = new OpenAI({ apiKey });
 
-    const { platform, duration, hook, description, frames } = req.body || {};
+    const { platform, duration, hook, description, frames, fingerprint } = req.body || {};
+    if (!fingerprint || typeof fingerprint !== "string") {
+      return res.status(400).json({ error: "fingerprint obrigatório" });
+    }
+
+    // ✅ 1) Se já analisou esse vídeo, devolve o mesmo resultado
+    const cached = getCache(fingerprint);
+    if (cached) {
+      return res.status(200).json({ ...cached, cached: true });
+    }
+
     const framesArr: string[] = Array.isArray(frames) ? frames : [];
     const framesLimited = framesArr.slice(0, 6);
 
@@ -20,11 +52,19 @@ export default async function handler(req: any, res: any) {
 Você é especialista em vídeos virais (TikTok, Reels, Shorts).
 Analise com base no texto e nos FRAMES enviados.
 Responda em Português do Brasil.
-`.trim(),
-      },
-      {
-        type: "input_text",
-        text: `
+
+Retorne APENAS um JSON neste formato:
+{
+  "score": 0,
+  "strengths": [],
+  "weaknesses": [],
+  "improvements": [],
+  "title": "",
+  "caption": "",
+  "cta": "",
+  "frame_insights": []
+}
+
 DADOS:
 - Plataforma: ${platform ?? "Todas"}
 - Duração: ${Number(duration ?? 0)} segundos
@@ -34,23 +74,20 @@ DADOS:
       },
       ...framesLimited.map((img) => ({
         type: "input_image",
-        image_url: img, // data:image/jpeg;base64,...
+        image_url: img,
         detail: "low",
       })),
     ];
 
-    // Tipado como any para evitar conflito de overload do TS
+    // Request com schema (como você já estava usando)
     const request: any = {
-      // Use um snapshot compatível com JSON Schema no Structured Outputs :contentReference[oaicite:2]{index=2}
       model: "gpt-4o-mini-2024-07-18",
       input: [{ role: "user", content }],
-      temperature: 0.7,
-
-      // ✅ FORMATO CERTO NO Responses API: text.format com name+schema :contentReference[oaicite:3]{index=3}
+      temperature: 0, // ajuda a reduzir variação também
       text: {
         format: {
           type: "json_schema",
-          name: "viracheck_analysis", // ✅ obrigatório (corrige seu erro 400)
+          name: "viracheck_analysis",
           strict: true,
           schema: {
             type: "object",
@@ -85,7 +122,10 @@ DADOS:
     const out = String(response.output_text || "").trim();
     const parsed = JSON.parse(out);
 
-    return res.status(200).json(parsed);
+    // ✅ 2) Salva no cache por 7 dias (ajuste como quiser)
+    setCache(fingerprint, parsed, 7 * 24 * 60 * 60 * 1000);
+
+    return res.status(200).json({ ...parsed, cached: false });
   } catch (err: any) {
     console.error("Analyze error:", err);
     return res.status(500).json({ error: err?.message || "Erro interno" });
