@@ -9,7 +9,10 @@ export default function Analyze() {
   const [description, setDescription] = useState("");
 
   const [videoFile, setVideoFile] = useState<File | null>(null);
-  const videoUrl = useMemo(() => (videoFile ? URL.createObjectURL(videoFile) : ""), [videoFile]);
+  const videoUrl = useMemo(
+    () => (videoFile ? URL.createObjectURL(videoFile) : ""),
+    [videoFile]
+  );
 
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState("");
@@ -17,18 +20,17 @@ export default function Analyze() {
   const [error, setError] = useState("");
 
   async function handleAnalyze() {
-    setLoading(true);
-    setProgress("");
-    setError("");
-    setResult(null);
-
     try {
-      if (!videoFile) throw new Error("Selecione um vídeo para analisar.");
+      if (!videoFile) throw new Error("Selecione um vídeo.");
 
+      setLoading(true);
       setProgress("Extraindo frames…");
-      const { frames, duration } = await extractFramesFromVideoFile(videoFile, 5, 640);
+      setError("");
+      setResult(null);
 
-      setProgress("Gerando fingerprint…");
+      const { frames, duration } = await extractFramesFromVideoFile(videoFile, 5);
+
+      setProgress("Analisando com IA…");
       const fingerprint = await makeVideoFingerprint({
         platform,
         duration: Math.round(duration || 15),
@@ -37,12 +39,11 @@ export default function Analyze() {
         frames,
       });
 
-      setProgress("Analisando com IA…");
       const data = await analyzeVideo({
         platform,
         duration: Math.round(duration || 15),
-        hook: hook.trim(),
-        description: description.trim(),
+        hook,
+        description,
         frames,
         fingerprint,
       });
@@ -50,8 +51,7 @@ export default function Analyze() {
       setResult(data);
       setProgress("");
     } catch (e: any) {
-      console.error(e);
-      setError(String(e?.message || e));
+      setError(e.message || "Erro inesperado");
       setProgress("");
     } finally {
       setLoading(false);
@@ -61,39 +61,37 @@ export default function Analyze() {
   return (
     <div className="container">
       <header className="header">
-        <div>
-          <h1 className="title">Viracheck AI</h1>
-          <p className="subtitle">Upload de vídeo + análise com IA (estável com cache)</p>
-        </div>
-        <div className="badge">Vercel • OpenAI</div>
+        <h1>Viracheck AI</h1>
+        <p>Análise profissional de vídeos com Inteligência Artificial</p>
       </header>
 
       <div className="grid">
+        {/* Upload */}
         <section className="card">
-          <h2 className="cardTitle">1) Upload do vídeo</h2>
+          <h2>🎥 Enviar vídeo</h2>
 
           <input
             className="input"
             type="file"
-            accept="video/mp4,video/quicktime,video/webm,video/*"
+            accept="video/*"
             onChange={(e) => setVideoFile(e.target.files?.[0] || null)}
           />
 
           {videoFile && (
-            <>
-              <div style={{ marginTop: 10 }} className="subtitle">
-                Arquivo: <strong style={{ color: "rgba(255,255,255,.92)" }}>{videoFile.name}</strong>
-              </div>
-              <video className="video" src={videoUrl} controls playsInline />
-            </>
+            <video className="video" src={videoUrl} controls playsInline />
           )}
         </section>
 
+        {/* Contexto */}
         <section className="card">
-          <h2 className="cardTitle">2) Contexto</h2>
+          <h2>🧠 Contexto</h2>
 
           <label className="label">Plataforma</label>
-          <select className="select" value={platform} onChange={(e) => setPlatform(e.target.value)}>
+          <select
+            className="select"
+            value={platform}
+            onChange={(e) => setPlatform(e.target.value)}
+          >
             <option>Todas</option>
             <option>TikTok</option>
             <option>Instagram Reels</option>
@@ -101,72 +99,76 @@ export default function Analyze() {
           </select>
 
           <label className="label">Gancho</label>
-          <input className="input" value={hook} onChange={(e) => setHook(e.target.value)} placeholder='Ex: "Você tá errando isso…"' />
+          <input
+            className="input"
+            placeholder="Ex: Você está errando isso…"
+            value={hook}
+            onChange={(e) => setHook(e.target.value)}
+          />
 
           <label className="label">Descrição</label>
-          <textarea className="textarea" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Explique o que acontece no vídeo…" />
+          <textarea
+            className="textarea"
+            placeholder="Descreva o conteúdo do vídeo"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
 
           <button className="button" onClick={handleAnalyze} disabled={loading}>
-            {loading ? "Analisando…" : "Analisar com IA"}
+            {loading ? "Analisando…" : "Analisar vídeo"}
           </button>
 
           {progress && <div className="notice">{progress}</div>}
           {error && <div className="error">{error}</div>}
         </section>
 
+        {/* Resultado */}
         <section className="card spanAll">
-          <h2 className="cardTitle">3) Resultado</h2>
+          <h2>📊 Resultado</h2>
 
-          {!result && <div className="subtitle">Envie um vídeo e clique em “Analisar”.</div>}
+          {!result && (
+            <div className="notice">
+              Envie um vídeo para receber a análise da IA.
+            </div>
+          )}
 
           {result && (
             <>
-              <div className="scoreWrap">
-                <div>
-                  <div className="subtitle">Score</div>
-                  <div className="scoreBig">{result.score}/100</div>
-                  <div style={{ marginTop: 6 }}>
-                    <span className="chip">{result.cached ? "✅ Cache (mesmo resultado)" : "🧠 Novo cálculo"}</span>
-                  </div>
-                </div>
-
-                <div className="row" style={{ justifyContent: "flex-end" }}>
-                  <button className="button secondaryBtn smallBtn" onClick={() => setResult(null)} type="button">
-                    Limpar
-                  </button>
-                </div>
+              <div className="scoreBox">
+                <div className="score">{result.score}/100</div>
+                <span className="badge">
+                  {result.cached ? "Resultado em cache" : "Nova análise"}
+                </span>
               </div>
 
-              <div className="grid" style={{ marginTop: 12 }}>
-                <div className="block">
-                  <h3 className="h3">✅ Pontos fortes</h3>
-                  <ul className="ul">{result.strengths.map((x, i) => <li key={i}>{x}</li>)}</ul>
-                </div>
+              <div className="block">
+                <h3>✅ Pontos fortes</h3>
+                <ul>{result.strengths.map((x, i) => <li key={i}>{x}</li>)}</ul>
+              </div>
 
-                <div className="block">
-                  <h3 className="h3">⚠️ Pontos fracos</h3>
-                  <ul className="ul">{result.weaknesses.map((x, i) => <li key={i}>{x}</li>)}</ul>
-                </div>
+              <div className="block">
+                <h3>⚠️ Pontos fracos</h3>
+                <ul>{result.weaknesses.map((x, i) => <li key={i}>{x}</li>)}</ul>
+              </div>
 
-                <div className="block spanAll">
-                  <h3 className="h3">🔧 Melhorias</h3>
-                  <ul className="ul">{result.improvements.map((x, i) => <li key={i}>{x}</li>)}</ul>
-                </div>
+              <div className="block">
+                <h3>🚀 Melhorias</h3>
+                <ul>{result.improvements.map((x, i) => <li key={i}>{x}</li>)}</ul>
+              </div>
 
-                <div className="block">
-                  <h3 className="h3">🧠 Título</h3>
-                  <div>{result.title}</div>
-                </div>
+              <div className="block">
+                <h3>📝 Sugestão de título</h3>
+                <p>{result.title}</p>
+              </div>
 
-                <div className="block">
-                  <h3 className="h3">✍️ Legenda</h3>
-                  <div>{result.caption}</div>
-                </div>
+              <div className="block">
+                <h3>✍️ Legenda</h3>
+                <p>{result.caption}</p>
+              </div>
 
-                <div className="block spanAll">
-                  <h3 className="h3">📣 CTA</h3>
-                  <div>{result.cta}</div>
-                </div>
+              <div className="block">
+                <h3>📣 CTA</h3>
+                <p>{result.cta}</p>
               </div>
             </>
           )}
