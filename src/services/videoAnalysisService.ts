@@ -8,26 +8,25 @@ export type VideoAnalysisResult = {
   cta: string;
 };
 
+const NETLIFY_BACKEND = "https://viracheck-ai.netlify.app";
+
 export async function analyzeVideo(data: {
   duration: number;
   platform: string;
   hook: string;
   description: string;
 }): Promise<VideoAnalysisResult> {
-  const response = await fetch(
-    "https://SEU-SITE-NETLIFY.netlify.app/.netlify/functions/analyzeVideo",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-    }
-  );
+  const res = await fetch(`${NETLIFY_BACKEND}/.netlify/functions/analyzeVideo`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
 
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(err || "Erro ao analisar vídeo");
+  const text = await res.text();
+
+  if (!res.ok) {
+    throw new Error(text || `Erro HTTP ${res.status}`);
   }
 
-  return response.json();
+  return JSON.parse(text);
 }
-
