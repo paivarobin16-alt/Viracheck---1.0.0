@@ -9,33 +9,85 @@ export default async function handler(req: any, res: any) {
 
     const client = new OpenAI({ apiKey });
 
-    const { platform, duration, hook, description } = req.body || {};
+    const { platform, duration, hook, description, frames } = req.body || {};
 
-    const prompt = `
-Você é especialista em vídeos virais para TikTok, Reels e Shorts.
-Responda APENAS um JSON válido com:
-score (0-100), strengths[], weaknesses[], improvements[], title, caption, cta.
+    const framesArr: string[] = Array.isArray(frames) ? frames : [];
+    const framesLimited = framesArr.slice(0, 6); // evita payload gigante
 
-Dados:
-Plataforma: ${platform ?? "Todas"}
-Duração: ${Number(duration ?? 0)}s
-Gancho: ${String(hook ?? "")}
-Descrição: ${String(description ?? "")}
+    const basePrompt = `
+Você é especialista em vídeos virais para TikTok, Instagram Reels e YouTube Shorts.
+Analise o vídeo com base no texto e nos FRAMES enviados (imagens do vídeo).
+
+Responda APENAS com um JSON válido (sem texto fora do JSON) no formato:
+{
+  "score": 0,
+  "strengths": [],
+  "weaknesses": [],
+  "improvements": [],
+  "title": "",
+  "caption": "",
+  "cta": "",
+  "frame_insights": []
+}
+
+Regras:
+- Português do Brasil
+- Score 0 a 100
+- Seja direto e prático
+- "frame_insights" deve citar elementos visuais percebidos nos frames (texto na tela, cenário, rosto, iluminação, etc.)
 `;
 
-    const completion = await client.chat.completions.create({
+    // Monta conteúdo multimodal (texto + imagens)
+    const content: any[] = [
+      {
+        type: "input_text",
+        text: `${basePrompt}
+
+DADOS:
+- Plataforma: ${platform ?? "Todas"}
+- Duração: ${Number(duration ?? 0)}s
+- Gancho: ${String(hook ?? "")}
+- Descrição: ${String(description ?? "")}
+
+Agora analise os frames abaixo:`,
+      },
+      ...framesLimited.map((img) => ({
+        type: "input_image",
+        image_url: img, // data:image/jpeg;base64,...
+        detail: "low",
+      })),
+    ];
+
+    // Responses API suporta texto + imagem como input :contentReference[oaicite:1]{index=1}
+    const response = await client.responses.create({
       model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
+      input: [
+        {
+          role: "user",
+          content,
+        },
+      ],
       temperature: 0.7,
     });
 
-    const text = completion.choices?.[0]?.message?.content?.trim() ?? "{}";
+    // A SDK retorna texto agregado em output_text (quando disponível).
+    const text = (response as any).output_text?.trim?.() ?? "";
 
     let parsed: any;
     try {
       parsed = JSON.parse(text);
     } catch {
-      parsed = { error: "A IA retornou formato inválido" };
+      parsed = {
+        score: 50,
+        strengths: [],
+        weaknesses: ["A IA não retornou JSON válido nesta tentativa."],
+        improvements: ["Tente novamente com uma descrição mais detalhada e frames mais nítidos."],
+        title: "Sugestão de título",
+        caption: "Sugestão de legenda",
+        cta: "Sugestão de CTA",
+        frame_insights: [],
+        raw: text,
+      };
     }
 
     return res.status(200).json(parsed);
