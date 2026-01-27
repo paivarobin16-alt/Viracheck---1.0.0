@@ -10,7 +10,6 @@ const CACHE = new Map<string, CachedValue>();
 function getCache(key: string) {
   const hit = CACHE.get(key);
   if (!hit) return null;
-
   if (Date.now() > hit.expiresAt) {
     CACHE.delete(key);
     return null;
@@ -33,13 +32,16 @@ export default async function handler(req: any, res: any) {
 
     const { platform, duration, hook, description, frames, fingerprint } = req.body || {};
 
-    if (!fingerprint || typeof fingerprint !== "string") {
-      return res.status(400).json({ error: "fingerprint obrigatório" });
-    }
+    // ✅ IMPORTANTE: se por algum motivo não vier fingerprint, ainda funciona,
+    // mas NÃO usa cache (evita quebrar seu app).
+    const cacheKey =
+      typeof fingerprint === "string" && fingerprint.trim().length > 10
+        ? fingerprint.trim()
+        : null;
 
-    const cached = getCache(fingerprint);
-    if (cached) {
-      return res.status(200).json({ ...cached, cached: true });
+    if (cacheKey) {
+      const cached = getCache(cacheKey);
+      if (cached) return res.status(200).json({ ...cached, cached: true });
     }
 
     const framesArr: string[] = Array.isArray(frames) ? frames : [];
@@ -118,11 +120,10 @@ DADOS:
     };
 
     const response: any = await client.responses.create(request);
-
     const out = String(response.output_text || "").trim();
     const parsed = JSON.parse(out);
 
-    setCache(fingerprint, parsed, 7 * 24 * 60 * 60 * 1000);
+    if (cacheKey) setCache(cacheKey, parsed, 7 * 24 * 60 * 60 * 1000); // 7 dias
 
     return res.status(200).json({ ...parsed, cached: false });
   } catch (err: any) {
