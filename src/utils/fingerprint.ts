@@ -12,14 +12,13 @@ export async function makeVideoFingerprint(params: {
   description: string;
   frames: string[];
 }): Promise<string> {
-  // Ordem fixa + campos fixos = fingerprint estável
   const payload = JSON.stringify({
     v: 1,
     platform: params.platform,
     duration: params.duration,
     hook: params.hook.trim(),
     description: params.description.trim(),
-    frames: params.frames.map((f) => f.slice(0, 2000)), // reduz peso
+    frames: params.frames.map((f) => f.slice(0, 2000)),
   });
 
   return sha256(payload);
