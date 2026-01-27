@@ -6,7 +6,15 @@
     <title>Viracheck AI</title>
   </head>
   <body>
-    <div id="root"></div>
+    <!-- Se isso não aparecer, o HTML nem está sendo servido -->
+    <div style="padding:16px;font-family:system-ui" id="static-check">
+      HTML carregou ✅
+    </div>
+
+    <div id="root" style="padding:16px;font-family:system-ui">
+      React ainda não carregou…
+    </div>
+
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
