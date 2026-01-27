@@ -1,12 +1,9 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import "./styles/app.css"; // se você estiver usando o CSS premium
 
-// marcador visível mesmo se React der erro depois
-const rootEl = document.getElementById("root");
-if (rootEl) rootEl.innerHTML = "main.tsx carregou ✅ (iniciando React...)";
-
-ReactDOM.createRoot(rootEl!).render(
+ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <App />
   </React.StrictMode>
