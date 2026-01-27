@@ -19,7 +19,7 @@ export default function Analyze() {
       const data = await analyzeVideo({ platform, duration, hook, description });
       setResult(data);
     } catch (e: any) {
-      console.error("Analyze error:", e);
+      console.error(e);
       setError(String(e?.message || e));
     } finally {
       setLoading(false);
@@ -43,7 +43,11 @@ export default function Analyze() {
 
         <label>
           Duração (segundos)
-          <input type="number" value={duration} min={1} max={180}
+          <input
+            type="number"
+            value={duration}
+            min={1}
+            max={180}
             onChange={(e) => setDuration(Number(e.target.value))}
             style={{ width: "100%", padding: 10, marginTop: 6 }}
           />
@@ -56,7 +60,10 @@ export default function Analyze() {
 
         <label>
           Descrição do vídeo
-          <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={5}
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={5}
             style={{ width: "100%", padding: 10, marginTop: 6 }}
           />
         </label>
@@ -65,7 +72,11 @@ export default function Analyze() {
           {loading ? "Analisando..." : "Analisar"}
         </button>
 
-        {error && <pre style={{ background: "#ffe7e7", padding: 12, borderRadius: 10, overflow: "auto" }}>{error}</pre>}
+        {error && (
+          <pre style={{ background: "#ffe7e7", padding: 12, borderRadius: 10, overflow: "auto" }}>
+            {error}
+          </pre>
+        )}
       </div>
 
       {result && (
