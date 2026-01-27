@@ -9,33 +9,31 @@ export async function extractFramesFromVideoFile(
   video.src = url;
   video.muted = true;
   video.playsInline = true;
-  video.crossOrigin = "anonymous";
 
   await new Promise<void>((resolve, reject) => {
     video.onloadedmetadata = () => resolve();
     video.onerror = () => reject(new Error("Falha ao carregar metadata do vídeo"));
   });
 
-  const duration = video.duration || 0;
+  const duration = Number.isFinite(video.duration) ? video.duration : 0;
 
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas não suportado");
 
-  const w = video.videoWidth || maxWidth;
-  const h = video.videoHeight || Math.round(maxWidth * (9 / 16));
+  const vw = video.videoWidth || maxWidth;
+  const vh = video.videoHeight || Math.round(maxWidth * (9 / 16));
 
-  const outW = Math.min(maxWidth, w);
-  const outH = Math.round(outW * (h / w));
-
+  const outW = Math.min(maxWidth, vw);
+  const outH = Math.round(outW * (vh / vw));
   canvas.width = outW;
   canvas.height = outH;
 
   const safeEnd = Math.max(0.2, duration - 0.2);
-  const timesBase = [0.5, 1.5, 3, 5, 7, 9];
-  const times = timesBase
-    .map((t) => Math.min(Math.max(t, 0.2), safeEnd))
-    .slice(0, frameCount);
+  const times = Array.from({ length: frameCount }, (_, i) => {
+    const t = (safeEnd / (frameCount + 1)) * (i + 1);
+    return Math.min(Math.max(t, 0.2), safeEnd);
+  });
 
   const frames: string[] = [];
 
@@ -49,7 +47,6 @@ export async function extractFramesFromVideoFile(
         video.removeEventListener("error", onError);
         reject(new Error("Falha ao buscar frame"));
       };
-
       video.addEventListener("seeked", onSeeked);
       video.addEventListener("error", onError);
       video.currentTime = t;
