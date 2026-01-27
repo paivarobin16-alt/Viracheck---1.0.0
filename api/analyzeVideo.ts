@@ -12,6 +12,7 @@ function getCache(key: string) {
   }
   return hit.value;
 }
+
 function setCache(key: string, value: any, ttlMs: number) {
   CACHE.set(key, { value, expiresAt: Date.now() + ttlMs });
 }
@@ -21,9 +22,7 @@ export default async function handler(req: any, res: any) {
     if (req.method !== "POST") return res.status(405).json({ error: "Use POST" });
 
     const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) return res.status(500).json({ error: "OPENAI_API_KEY não configurada no Vercel" });
-
-    const client = new OpenAI({ apiKey });
+    if (!apiKey) return res.status(500).json({ error: "OPENAI_API_KEY não configurada" });
 
     const { platform, duration, hook, description, frames, fingerprint } = req.body || {};
     if (!fingerprint || typeof fingerprint !== "string") {
@@ -33,6 +32,8 @@ export default async function handler(req: any, res: any) {
     const cached = getCache(fingerprint);
     if (cached) return res.status(200).json({ ...cached, cached: true });
 
+    const client = new OpenAI({ apiKey });
+
     const framesArr: string[] = Array.isArray(frames) ? frames : [];
     const framesLimited = framesArr.slice(0, 6);
 
@@ -41,10 +42,9 @@ export default async function handler(req: any, res: any) {
         type: "input_text",
         text: `
 Você é especialista em vídeos virais (TikTok, Reels, Shorts).
-Analise com base no texto e nos FRAMES enviados.
 Responda em Português do Brasil.
 
-Retorne APENAS um JSON no formato:
+Retorne APENAS JSON no formato:
 {
   "score": 0,
   "strengths": [],
@@ -52,8 +52,7 @@ Retorne APENAS um JSON no formato:
   "improvements": [],
   "title": "",
   "caption": "",
-  "cta": "",
-  "frame_insights": []
+  "cta": ""
 }
 
 DADOS:
@@ -61,16 +60,12 @@ DADOS:
 - Duração: ${Number(duration ?? 0)} segundos
 - Gancho: ${String(hook ?? "")}
 - Descrição: ${String(description ?? "")}
-`.trim(),
+`.trim()
       },
-      ...framesLimited.map((img) => ({
-        type: "input_image",
-        image_url: img,
-        detail: "low",
-      })),
+      ...framesLimited.map((img) => ({ type: "input_image", image_url: img, detail: "low" }))
     ];
 
-    const request: any = {
+    const response: any = await client.responses.create({
       model: "gpt-4o-mini-2024-07-18",
       input: [{ role: "user", content }],
       temperature: 0,
@@ -89,24 +84,21 @@ DADOS:
               improvements: { type: "array", items: { type: "string" } },
               title: { type: "string" },
               caption: { type: "string" },
-              cta: { type: "string" },
-              frame_insights: { type: "array", items: { type: "string" } },
+              cta: { type: "string" }
             },
-            required: ["score", "strengths", "weaknesses", "improvements", "title", "caption", "cta", "frame_insights"],
-          },
-        },
-      },
-    };
+            required: ["score", "strengths", "weaknesses", "improvements", "title", "caption", "cta"]
+          }
+        }
+      }
+    });
 
-    const response: any = await client.responses.create(request);
     const out = String(response.output_text || "").trim();
     const parsed = JSON.parse(out);
 
-    setCache(fingerprint, parsed, 7 * 24 * 60 * 60 * 1000); // 7 dias
-
+    setCache(fingerprint, parsed, 7 * 24 * 60 * 60 * 1000);
     return res.status(200).json({ ...parsed, cached: false });
   } catch (err: any) {
-    console.error("Analyze error:", err);
+    console.error(err);
     return res.status(500).json({ error: err?.message || "Erro interno" });
   }
 }
