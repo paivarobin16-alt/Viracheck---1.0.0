@@ -17,47 +17,45 @@ export default async function handler(req: any, res: any) {
     const framesArr: string[] = Array.isArray(frames) ? frames : [];
     const framesLimited = framesArr.slice(0, 6);
 
-    const prompt = `
-Você é especialista em vídeos virais para TikTok, Instagram Reels e YouTube Shorts.
-
-Analise o vídeo com base:
-- no texto fornecido
-- e nos FRAMES (imagens) enviados
-
-Siga estritamente o schema JSON abaixo.
-Responda em Português do Brasil.
-`;
-
     const content: any[] = [
       {
         type: "input_text",
         text: `
-${prompt}
+Você é especialista em vídeos virais para TikTok, Instagram Reels e YouTube Shorts.
+Analise com base no texto e nos FRAMES enviados.
 
 DADOS:
 - Plataforma: ${platform ?? "Todas"}
 - Duração: ${Number(duration ?? 0)} segundos
 - Gancho: ${String(hook ?? "")}
 - Descrição: ${String(description ?? "")}
-        `,
+
+Responda APENAS com um JSON válido no formato:
+{
+  "score": 0,
+  "strengths": [],
+  "weaknesses": [],
+  "improvements": [],
+  "title": "",
+  "caption": "",
+  "cta": "",
+  "frame_insights": []
+}
+`.trim(),
       },
       ...framesLimited.map((img) => ({
         type: "input_image",
-        image_url: img, // data:image/jpeg;base64,...
+        image_url: img,
         detail: "low",
       })),
     ];
 
-    const response = await client.responses.create({
-      model: "gpt-4o-mini-2024-07-18",
-      input: [
-        {
-          role: "user",
-          content,
-        },
-      ],
+    // ✅ IMPORTANTE: tipa como `any` para evitar TS2769 (overload)
+    const request: any = {
+      model: "gpt-4o-mini",
+      input: [{ role: "user", content }],
 
-      // ✅ NOVO LOCAL CORRETO DO JSON SCHEMA
+      // ✅ JSON schema no lugar certo (Responses API)
       text: {
         format: {
           type: "json_schema",
@@ -75,7 +73,7 @@ DADOS:
                 title: { type: "string" },
                 caption: { type: "string" },
                 cta: { type: "string" },
-                frame_insights: { type: "array", items: { type: "string" } },
+                frame_insights: { type: "array", items: { type: "string" } }
               },
               required: [
                 "score",
@@ -85,25 +83,24 @@ DADOS:
                 "title",
                 "caption",
                 "cta",
-                "frame_insights",
-              ],
-            },
-          },
-        },
+                "frame_insights"
+              ]
+            }
+          }
+        }
       },
 
       temperature: 0.7,
-    });
+    };
 
-    // 🔐 Structured Outputs = JSON garantido
-    const text = (response as any).output_text;
+    const response: any = await client.responses.create(request);
+
+    const text = String(response.output_text || "").trim();
     const parsed = JSON.parse(text);
 
     return res.status(200).json(parsed);
   } catch (err: any) {
     console.error("Analyze error:", err);
-    return res.status(500).json({
-      error: err?.message || "Erro interno",
-    });
+    return res.status(500).json({ error: err?.message || "Erro interno" });
   }
 }
