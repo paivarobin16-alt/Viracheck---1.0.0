@@ -1,124 +1,174 @@
-// ✅ PASSO 2: Chamada correta na Responses API com Structured Outputs (text.format)
-// Docs: Structured Outputs via text.format exige `name` + `schema` + `type` :contentReference[oaicite:1]{index=1}
+import type { VercelRequest, VercelResponse } from "@vercel/node";
 
-type ViracheckAnalysis = {
-  resumo: string;
-  nota_viralizacao: number; // 0..100
-  pontos_fortes: string[];
-  pontos_fracos: string[];
-  sugestoes_melhoria: string[];
-  ganchos_sugeridos: string[];
-  hashtags_sugeridas: string[];
-  recomendacoes_por_plataforma: {
-    tiktok: string[];
-    instagram: string[];
-    youtube_shorts: string[];
-    kwai: string[];
-  };
-};
+function json(res: VercelResponse, status: number, data: any) {
+  res.status(status);
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
+  res.end(JSON.stringify(data));
+}
 
-export async function callOpenAIForAnalysis(params: {
-  plataforma: "todas" | "tiktok" | "instagram" | "youtube_shorts" | "kwai";
-  gancho?: string;
-  descricao?: string;
-  // Você pode passar aqui qualquer texto/metadata que você extraiu do vídeo
-  // (ex: duração, tipo, falas, frames, etc.)
-  contextoExtra?: string;
-}): Promise<ViracheckAnalysis> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("OPENAI_API_KEY não configurada");
+function safeParseBody(req: VercelRequest): any {
+  // Vercel às vezes entrega req.body como objeto, às vezes como string
+  if (!req.body) return {};
+  if (typeof req.body === "object") return req.body;
+  if (typeof req.body === "string") {
+    try {
+      return JSON.parse(req.body);
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
 
-  const { plataforma, gancho, descricao, contextoExtra } = params;
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  try {
+    if (req.method !== "POST") {
+      return json(res, 405, { error: "Método não permitido. Use POST." });
+    }
 
-  const system = `
-Você é o Viracheck AI (PT-BR).
-Responda APENAS no formato JSON do schema.
-Se algum dado não existir, use string vazia "" ou lista vazia [].
-A nota_viralizacao deve ser um número de 0 a 100.
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return json(res, 500, {
+        error: "OPENAI_API_KEY não configurada na Vercel.",
+        details: "Vercel > Project Settings > Environment Variables > OPENAI_API_KEY (Production) e redeploy.",
+      });
+    }
+
+    const body = safeParseBody(req);
+
+    const platform = String(body.platform || "Todas");
+    const hook = String(body.hook || "");
+    const description = String(body.description || "");
+    const frames = Array.isArray(body.frames) ? body.frames : [];
+
+    if (!frames.length) {
+      return json(res, 400, { error: "Envie frames (imagens) do vídeo." });
+    }
+
+    // ✅ Proteção: se vier payload absurdo, avisa logo (evita crash)
+    if (frames.length > 6) {
+      return json(res, 400, {
+        error: "Muitos frames enviados.",
+        details: "Envie no máximo 6 frames.",
+      });
+    }
+
+    // ✅ Prompt (PT-BR)
+    const system =
+      "Você é especialista em viralização (TikTok, Reels, Shorts). Responda SEMPRE em pt-BR. Seja direto e prático.";
+    const userText = `
+Plataforma: ${platform}
+Gancho (opcional): ${hook}
+Descrição (opcional): ${description}
+
+Analise os frames do vídeo e retorne JSON seguindo o schema.
 `;
 
-  const user = `
-Analise este vídeo (com base nas informações fornecidas) e gere recomendações práticas.
+    // ✅ Schema
+    const schema = {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        score_viralizacao: { type: "integer", minimum: 0, maximum: 100 },
+        resumo: { type: "string" },
+        pontos_fortes: { type: "array", items: { type: "string" } },
+        pontos_fracos: { type: "array", items: { type: "string" } },
+        melhorias_praticas: { type: "array", items: { type: "string" } },
+        ganchos: { type: "array", items: { type: "string" } },
+        legendas: { type: "array", items: { type: "string" } },
+        hashtags: { type: "array", items: { type: "string" } },
+        observacoes: { type: "string" },
+      },
+      required: [
+        "score_viralizacao",
+        "resumo",
+        "pontos_fortes",
+        "pontos_fracos",
+        "melhorias_praticas",
+        "ganchos",
+        "legendas",
+        "hashtags",
+        "observacoes",
+      ],
+    };
 
-Plataforma: ${plataforma}
-Gancho (opcional): ${gancho ?? ""}
-Descrição (opcional): ${descricao ?? ""}
-Contexto extra (opcional): ${contextoExtra ?? ""}
+    const input = [
+      { role: "system", content: [{ type: "input_text", text: system }] },
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: userText },
+          ...frames.map((dataUrl: string) => ({
+            type: "input_image",
+            image_url: dataUrl,
+          })),
+        ],
+      },
+    ];
 
-Quero sugestões objetivas para aumentar retenção, CTA, edição, legenda, ritmo, estrutura, e ideias de melhorias.
-`;
-
-  const body = {
-    model: "gpt-4o-mini",
-    // ✅ Para reduzir aleatoriedade e dar resultados mais consistentes:
-    temperature: 0,
-    input: [
-      { role: "system", content: system },
-      { role: "user", content: user },
-    ],
-    text: {
-      format: {
-        type: "json_schema",
-        // ✅ ESTE `name` é obrigatório (era o que estava faltando!)
-        name: "viracheck_analysis",
-        strict: true,
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            resumo: { type: "string" },
-            nota_viralizacao: { type: "number", minimum: 0, maximum: 100 },
-            pontos_fortes: { type: "array", items: { type: "string" } },
-            pontos_fracos: { type: "array", items: { type: "string" } },
-            sugestoes_melhoria: { type: "array", items: { type: "string" } },
-            ganchos_sugeridos: { type: "array", items: { type: "string" } },
-            hashtags_sugeridas: { type: "array", items: { type: "string" } },
-            recomendacoes_por_plataforma: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                tiktok: { type: "array", items: { type: "string" } },
-                instagram: { type: "array", items: { type: "string" } },
-                youtube_shorts: { type: "array", items: { type: "string" } },
-                kwai: { type: "array", items: { type: "string" } },
-              },
-              required: ["tiktok", "instagram", "youtube_shorts", "kwai"],
-            },
-          },
-          required: [
-            "resumo",
-            "nota_viralizacao",
-            "pontos_fortes",
-            "pontos_fracos",
-            "sugestoes_melhoria",
-            "ganchos_sugeridos",
-            "hashtags_sugeridas",
-            "recomendacoes_por_plataforma",
-          ],
+    // ✅ Chamada correta (com name obrigatório)
+    const payload = {
+      model: "gpt-4o-mini",
+      input,
+      temperature: 0,
+      max_output_tokens: 900,
+      text: {
+        format: {
+          type: "json_schema",
+          name: "viracheck_analysis", // ✅ obrigatório
+          strict: true,
+          schema, // ✅ schema aqui (não embrulha outro objeto)
         },
       },
-    },
-  };
+    };
 
-  const resp = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+    const resp = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+       n        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
 
-  const data = await resp.json();
-  if (!resp.ok) {
-    throw new Error(
-      `OpenAI API ${resp.status}: ${JSON.stringify(data, null, 2)}`
-    );
+    const raw = await resp.text();
+
+    if (!resp.ok) {
+      console.error("OpenAI error:", raw);
+      return json(res, resp.status, {
+        error: "Falha na OpenAI API",
+        status: resp.status,
+        details: raw.slice(0, 2000),
+      });
+    }
+
+    let data: any;
+    try {
+      data = JSON.parse(raw);
+    } catch (e) {
+      console.error("JSON parse failed:", raw);
+      return json(res, 500, { error: "Resposta da OpenAI não é JSON", details: raw.slice(0, 500) });
+    }
+
+    const outText = data.output_text || "";
+    let result: any;
+
+    try {
+      result = JSON.parse(outText);
+    } catch (e) {
+      console.error("Model returned non-JSON:", outText);
+      return json(res, 500, {
+        error: "A IA não retornou JSON válido",
+        details: String(outText).slice(0, 800),
+      });
+    }
+
+    return json(res, 200, { result });
+  } catch (err: any) {
+    // ✅ Essa linha faz aparecer o erro REAL nos logs da Vercel
+    console.error("Function crash:", err);
+    return json(res, 500, { error: "Erro interno da Function", details: err?.message || String(err) });
   }
-
-  // ✅ A Responses API retorna o texto final em `output_text`
-  // Com `json_schema`, output_text será JSON válido (string)
-  const jsonText = data.output_text as string;
-  const parsed = JSON.parse(jsonText) as ViracheckAnalysis;
-  return parsed;
 }
+
