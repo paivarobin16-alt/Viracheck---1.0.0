@@ -1,14 +1,14 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
-function json(res: VercelResponse, status: number, data: any) {
+/* -------------------- helpers -------------------- */
+function send(res: VercelResponse, status: number, data: any) {
   res.status(status);
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
   res.end(JSON.stringify(data));
 }
 
-function safeParseBody(req: VercelRequest): any {
-  // Vercel às vezes entrega req.body como objeto, às vezes como string
+function parseBody(req: VercelRequest): any {
   if (!req.body) return {};
   if (typeof req.body === "object") return req.body;
   if (typeof req.body === "string") {
@@ -21,51 +21,69 @@ function safeParseBody(req: VercelRequest): any {
   return {};
 }
 
+/* -------------------- handler -------------------- */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (req.method !== "POST") {
-      return json(res, 405, { error: "Método não permitido. Use POST." });
+      return send(res, 405, { error: "Método não permitido. Use POST." });
     }
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      return json(res, 500, {
-        error: "OPENAI_API_KEY não configurada na Vercel.",
-        details: "Vercel > Project Settings > Environment Variables > OPENAI_API_KEY (Production) e redeploy.",
+      return send(res, 500, {
+        error: "OPENAI_API_KEY não configurada",
+        details:
+          "Vercel > Project Settings > Environment Variables > OPENAI_API_KEY (Production) e faça redeploy.",
       });
     }
 
-    const body = safeParseBody(req);
+    const body = parseBody(req);
 
     const platform = String(body.platform || "Todas");
     const hook = String(body.hook || "");
     const description = String(body.description || "");
-    const frames = Array.isArray(body.frames) ? body.frames : [];
+    const frames: string[] = Array.isArray(body.frames) ? body.frames : [];
 
     if (!frames.length) {
-      return json(res, 400, { error: "Envie frames (imagens) do vídeo." });
+      return send(res, 400, { error: "Envie pelo menos 1 frame do vídeo." });
     }
 
-    // ✅ Proteção: se vier payload absurdo, avisa logo (evita crash)
+    // 🔒 proteção contra payload grande
     if (frames.length > 6) {
-      return json(res, 400, {
-        error: "Muitos frames enviados.",
+      return send(res, 400, {
+        error: "Muitos frames enviados",
         details: "Envie no máximo 6 frames.",
       });
     }
 
-    // ✅ Prompt (PT-BR)
+    /* -------------------- prompt -------------------- */
     const system =
-      "Você é especialista em viralização (TikTok, Reels, Shorts). Responda SEMPRE em pt-BR. Seja direto e prático.";
+      "Você é especialista em viralização (TikTok, Reels, Shorts). Responda SEMPRE em pt-BR, de forma prática.";
+
     const userText = `
 Plataforma: ${platform}
 Gancho (opcional): ${hook}
 Descrição (opcional): ${description}
 
-Analise os frames do vídeo e retorne JSON seguindo o schema.
+Analise os frames do vídeo e gere recomendações para aumentar viralização.
+Responda exclusivamente em JSON conforme o schema.
 `;
 
-    // ✅ Schema
+    const input = [
+      { role: "system", content: [{ type: "input_text", text: system }] },
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: userText },
+          ...frames.map((img) => ({
+            type: "input_image",
+            image_url: img,
+          })),
+        ],
+      },
+    ];
+
+    /* -------------------- schema -------------------- */
     const schema = {
       type: "object",
       additionalProperties: false,
@@ -93,32 +111,18 @@ Analise os frames do vídeo e retorne JSON seguindo o schema.
       ],
     };
 
-    const input = [
-      { role: "system", content: [{ type: "input_text", text: system }] },
-      {
-        role: "user",
-        content: [
-          { type: "input_text", text: userText },
-          ...frames.map((dataUrl: string) => ({
-            type: "input_image",
-            image_url: dataUrl,
-          })),
-        ],
-      },
-    ];
-
-    // ✅ Chamada correta (com name obrigatório)
+    /* -------------------- openai call -------------------- */
     const payload = {
       model: "gpt-4o-mini",
-      input,
-      temperature: 0,
+      temperature: 0, // estabilidade (mesmo vídeo → mesmo resultado)
       max_output_tokens: 900,
+      input,
       text: {
         format: {
           type: "json_schema",
-          name: "viracheck_analysis", // ✅ obrigatório
+          name: "viracheck_analysis", // ⚠️ obrigatório
           strict: true,
-          schema, // ✅ schema aqui (não embrulha outro objeto)
+          schema,
         },
       },
     };
@@ -127,7 +131,7 @@ Analise os frames do vídeo e retorne JSON seguindo o schema.
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
-       n        "Content-Type": "application/json",
+        "Content-Type": "application/json",
       },
       body: JSON.stringify(payload),
     });
@@ -136,7 +140,7 @@ Analise os frames do vídeo e retorne JSON seguindo o schema.
 
     if (!resp.ok) {
       console.error("OpenAI error:", raw);
-      return json(res, resp.status, {
+      return send(res, resp.status, {
         error: "Falha na OpenAI API",
         status: resp.status,
         details: raw.slice(0, 2000),
@@ -146,29 +150,39 @@ Analise os frames do vídeo e retorne JSON seguindo o schema.
     let data: any;
     try {
       data = JSON.parse(raw);
-    } catch (e) {
-      console.error("JSON parse failed:", raw);
-      return json(res, 500, { error: "Resposta da OpenAI não é JSON", details: raw.slice(0, 500) });
-    }
-
-    const outText = data.output_text || "";
-    let result: any;
-
-    try {
-      result = JSON.parse(outText);
-    } catch (e) {
-      console.error("Model returned non-JSON:", outText);
-      return json(res, 500, {
-        error: "A IA não retornou JSON válido",
-        details: String(outText).slice(0, 800),
+    } catch {
+      console.error("Resposta não-JSON:", raw);
+      return send(res, 500, {
+        error: "Resposta inválida da OpenAI",
+        details: raw.slice(0, 500),
       });
     }
 
-    return json(res, 200, { result });
+    const outputText = data.output_text;
+    if (!outputText) {
+      return send(res, 500, {
+        error: "OpenAI não retornou output_text",
+        details: JSON.stringify(data).slice(0, 800),
+      });
+    }
+
+    let result: any;
+    try {
+      result = JSON.parse(outputText);
+    } catch {
+      return send(res, 500, {
+        error: "A IA não retornou JSON válido",
+        details: String(outputText).slice(0, 800),
+      });
+    }
+
+    return send(res, 200, { result });
   } catch (err: any) {
-    // ✅ Essa linha faz aparecer o erro REAL nos logs da Vercel
     console.error("Function crash:", err);
-    return json(res, 500, { error: "Erro interno da Function", details: err?.message || String(err) });
+    return send(res, 500, {
+      error: "Erro interno da Function",
+      details: err?.message || String(err),
+    });
   }
 }
 
