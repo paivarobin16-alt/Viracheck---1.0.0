@@ -1,5 +1,8 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
+/* =========================
+   HELPERS
+========================= */
 function send(res: VercelResponse, status: number, data: any) {
   res.status(status);
   res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -20,14 +23,43 @@ function parseBody(req: VercelRequest): any {
   return {};
 }
 
+/** 🔒 Garante image_url válido para a OpenAI */
+function normalizeImageUrl(input: any): string {
+  if (!input) return "";
+
+  const s = String(input).trim();
+
+  // URL normal
+  if (s.startsWith("http://") || s.startsWith("https://")) return s;
+
+  // Data URL válido
+  if (s.startsWith("data:image/")) return s;
+
+  // Base64 puro → converte para data URL
+  if (/^[A-Za-z0-9+/=]+$/.test(s)) {
+    const isPng = s.startsWith("iVBOR");
+    const mime = isPng ? "image/png" : "image/jpeg";
+    return `data:${mime};base64,${s}`;
+  }
+
+  return "";
+}
+
+/** Extrai output_text da Responses API */
 function extractOutputText(data: any): string {
-  if (typeof data?.output_text === "string" && data.output_text.trim()) return data.output_text;
+  if (typeof data?.output_text === "string" && data.output_text.trim()) {
+    return data.output_text;
+  }
 
   if (Array.isArray(data?.output)) {
     for (const item of data.output) {
       if (item?.type === "message" && Array.isArray(item?.content)) {
         for (const part of item.content) {
-          if (part?.type === "output_text" && typeof part?.text === "string" && part.text.trim()) {
+          if (
+            part?.type === "output_text" &&
+            typeof part?.text === "string" &&
+            part.text.trim()
+          ) {
             return part.text;
           }
         }
@@ -37,70 +69,85 @@ function extractOutputText(data: any): string {
   return "";
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+/* =========================
+   HANDLER
+========================= */
+export default async function handler(
+  req: VercelRequest,
+  res: VercelResponse
+) {
   try {
-    if (req.method !== "POST") return send(res, 405, { error: "Método não permitido. Use POST." });
+    if (req.method !== "POST") {
+      return send(res, 405, { error: "Método não permitido. Use POST." });
+    }
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
       return send(res, 500, {
         error: "OPENAI_API_KEY não configurada",
-        details: "Vercel > Project Settings > Environment Variables > OPENAI_API_KEY (Production) e faça redeploy.",
+        details:
+          "Configure em Vercel → Project Settings → Environment Variables",
       });
     }
 
     const body = parseBody(req);
-    const platform = String(body.platform || "Todas");
-    const hook = String(body.hook || "");
-    const description = String(body.description || "");
-    const video_hash = String(body.video_hash || "");
 
-    // frames agora são objetos: [{ t: number, image: "data:image/..." }, ...]
-    const frames = Array.isArray(body.frames) ? body.frames : [];
-    const video_meta = typeof body.video_meta === "object" && body.video_meta ? body.video_meta : {};
+    const framesRaw = Array.isArray(body.frames) ? body.frames : [];
+    const videoMeta = body.video_meta || {};
+    const videoHash = String(body.video_hash || "");
 
-    if (!frames.length) return send(res, 400, { error: "Envie frames do vídeo." });
-    if (frames.length > 8) return send(res, 400, { error: "Muitos frames", details: "Envie no máximo 8." });
+    // Normaliza frames (aceita {image} ou string)
+    const normalizedImages = framesRaw
+      .map((f: any) => normalizeImageUrl(f?.image ?? f))
+      .filter(Boolean);
 
+    if (!normalizedImages.length) {
+      return send(res, 400, {
+        error: "Nenhum frame válido foi recebido",
+        details:
+          "Os frames não estavam em formato de imagem válido (data:image ou base64).",
+      });
+    }
+
+    if (normalizedImages.length > 8) {
+      return send(res, 400, {
+        error: "Muitos frames",
+        details: "Envie no máximo 8 frames.",
+      });
+    }
+
+    /* =========================
+       PROMPT
+    ========================= */
     const system = `
 Você é especialista em viralização (TikTok, Reels, Shorts).
-Responda SEMPRE em pt-BR.
+Responda SEMPRE em português do Brasil.
 
-REGRA DO SCORE (obrigatório):
-- Você DEVE calcular o score final (0..100) como soma de 5 critérios (0..20 cada):
-  hook_impacto, qualidade_visual, clareza_mensagem, legibilidade_texto_legenda, potencial_engajamento.
+REGRA OBRIGATÓRIA:
+- O score final DEVE ser a soma de 5 critérios (0..20 cada):
+  hook_impacto,
+  qualidade_visual,
+  clareza_mensagem,
+  legibilidade_texto_legenda,
+  potencial_engajamento.
 
 IMPORTANTE:
-- Use os FRAMES + timestamps + metadados do vídeo para diferenciar vídeos.
-- Se 2 vídeos forem diferentes (hash, duração, frames, resolução, etc), as notas devem refletir diferenças reais.
-- Se não houver legenda visível nos frames, legibilidade_texto_legenda deve ser menor.
-- Se os frames forem muito parecidos/sem variação, reduza potencial_engajamento.
+- Use frames + metadados do vídeo para diferenciar vídeos.
+- Vídeos diferentes NÃO devem ter sempre o mesmo score.
+- Retorne SOMENTE JSON no formato exigido.
 `;
 
     const userText = `
-Plataforma: ${platform}
-Gancho (opcional): ${hook}
-Descrição (opcional): ${description}
-
-Identificador do vídeo (hash): ${video_hash || "não informado"}
+Identificador do vídeo (hash): ${videoHash || "não informado"}
 
 Metadados do vídeo:
-${JSON.stringify(video_meta, null, 2)}
-
-Frames enviados (cada um com timestamp):
-${JSON.stringify(frames.map((f: any) => ({ t: f?.t, note: "imagem em input_image" })), null, 2)}
+${JSON.stringify(videoMeta, null, 2)}
 
 Tarefa:
-1) Analise os frames (com seus timestamps) e os metadados do vídeo.
-2) Dê notas (0..20) para:
-   - hook_impacto
-   - qualidade_visual
-   - clareza_mensagem
-   - legibilidade_texto_legenda
-   - potencial_engajamento
-3) Some tudo e retorne score_viralizacao = soma (0..100).
-4) Retorne sugestões (pontos fortes/fracos, melhorias, ganchos, legendas, hashtags).
-5) Retorne SOMENTE JSON conforme o schema.
+1) Analise os frames enviados.
+2) Avalie os 5 critérios (0..20).
+3) Some e gere score_viralizacao (0..100).
+4) Gere sugestões práticas (ganchos, legendas, hashtags).
 `;
 
     const input: any[] = [
@@ -109,9 +156,9 @@ Tarefa:
         role: "user",
         content: [
           { type: "input_text", text: userText },
-          ...frames.map((f: any) => ({
+          ...normalizedImages.map((img) => ({
             type: "input_image",
-            image_url: String(f.image || ""),
+            image_url: img,
           })),
         ],
       },
@@ -128,10 +175,24 @@ Tarefa:
             hook_impacto: { type: "integer", minimum: 0, maximum: 20 },
             qualidade_visual: { type: "integer", minimum: 0, maximum: 20 },
             clareza_mensagem: { type: "integer", minimum: 0, maximum: 20 },
-            legibilidade_texto_legenda: { type: "integer", minimum: 0, maximum: 20 },
-            potencial_engajamento: { type: "integer", minimum: 0, maximum: 20 },
+            legibilidade_texto_legenda: {
+              type: "integer",
+              minimum: 0,
+              maximum: 20,
+            },
+            potencial_engajamento: {
+              type: "integer",
+              minimum: 0,
+              maximum: 20,
+            },
           },
-          required: ["hook_impacto", "qualidade_visual", "clareza_mensagem", "legibilidade_texto_legenda", "potencial_engajamento"],
+          required: [
+            "hook_impacto",
+            "qualidade_visual",
+            "clareza_mensagem",
+            "legibilidade_texto_legenda",
+            "potencial_engajamento",
+          ],
         },
         score_viralizacao: { type: "integer", minimum: 0, maximum: 100 },
         resumo: { type: "string" },
@@ -160,12 +221,12 @@ Tarefa:
     const payload = {
       model: "gpt-4o-mini",
       temperature: 0,
-      max_output_tokens: 980,
+      max_output_tokens: 900,
       input,
       text: {
         format: {
           type: "json_schema",
-          name: "viracheck_analysis_v2",
+          name: "viracheck_analysis",
           strict: true,
           schema,
         },
@@ -183,28 +244,26 @@ Tarefa:
 
     const raw = await resp.text();
     if (!resp.ok) {
-      return send(res, resp.status, { error: "Falha na OpenAI API", status: resp.status, details: raw.slice(0, 2000) });
+      return send(res, resp.status, {
+        error: "Falha na OpenAI API",
+        details: raw.slice(0, 2000),
+      });
     }
 
-    let data: any;
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      return send(res, 500, { error: "Resposta inválida da OpenAI", details: raw.slice(0, 800) });
-    }
-
+    const data = JSON.parse(raw);
     const out = extractOutputText(data);
-    if (!out) return send(res, 500, { error: "OpenAI não retornou output_text", details: JSON.stringify(data).slice(0, 1400) });
 
-    let result: any;
-    try {
-      result = JSON.parse(out);
-    } catch {
-      return send(res, 500, { error: "A IA não retornou JSON válido", details: out.slice(0, 1200) });
+    if (!out) {
+      return send(res, 500, {
+        error: "OpenAI não retornou texto válido",
+        details: JSON.stringify(data).slice(0, 1500),
+      });
     }
 
-    // valida soma
-    const c = result?.criterios || {};
+    const result = JSON.parse(out);
+
+    // 🔎 valida soma
+    const c = result.criterios || {};
     const sum =
       (Number(c.hook_impacto) || 0) +
       (Number(c.qualidade_visual) || 0) +
@@ -212,13 +271,18 @@ Tarefa:
       (Number(c.legibilidade_texto_legenda) || 0) +
       (Number(c.potencial_engajamento) || 0);
 
-    if (Number(result.score_viralizacao) !== sum) {
+    if (result.score_viralizacao !== sum) {
       result.score_viralizacao = Math.max(0, Math.min(100, sum));
-      result.observacoes = `${result.observacoes || ""} (Ajuste automático: score = soma dos critérios.)`.trim();
+      result.observacoes = `${
+        result.observacoes || ""
+      } (Score ajustado automaticamente pela soma dos critérios.)`.trim();
     }
 
     return send(res, 200, { result });
   } catch (err: any) {
-    return send(res, 500, { error: "Erro interno da Function", details: err?.message || String(err) });
+    return send(res, 500, {
+      error: "Erro interno da Function",
+      details: err?.message || String(err),
+    });
   }
 }
