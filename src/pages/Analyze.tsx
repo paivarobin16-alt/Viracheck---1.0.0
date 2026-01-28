@@ -154,7 +154,7 @@ function LoadingOverlay({ text }: { text: string }) {
               animation: "spin 0.9s linear infinite",
             }}
           />
-          <div style={{ fontWeight: 1000 }}>Processando…</div>
+          <div style={{ fontWeight: 1000 }}>Analisando…</div>
         </div>
         <div style={{ marginTop: 10, opacity: 0.8, fontSize: 13 }}>{text}</div>
 
@@ -216,12 +216,7 @@ export default function Analyze() {
       });
 
       const raw = await resp.text();
-      let parsed: any;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        throw new Error(`API retornou algo que não é JSON (${resp.status}): ${raw.slice(0, 250)}`);
-      }
+      const parsed = JSON.parse(raw);
 
       if (!resp.ok) {
         throw new Error(parsed?.details || parsed?.error || "Erro da API");
@@ -230,11 +225,7 @@ export default function Analyze() {
       const normalized = normalizeResult(parsed);
       setAnalysis(normalized);
 
-      if (parsed?.cached) {
-        setMessage("✅ Já existia análise para esse vídeo. Retornei o mesmo resultado.");
-      } else {
-        setMessage("✅ Análise criada e salva. Próxima vez esse vídeo retorna igual.");
-      }
+      setMessage(parsed?.cached ? "✅ Esse vídeo já foi analisado. Resultado reaproveitado." : "✅ Análise criada e salva.");
     } catch (e: any) {
       setMessage(`❌ ${e?.message || String(e)}`);
     } finally {
@@ -269,7 +260,7 @@ export default function Analyze() {
       >
         <h1 style={{ margin: 0, fontSize: 20, fontWeight: 1000 }}>📹 Viracheck AI — Analisar vídeo</h1>
         <p style={{ margin: "6px 0 0", opacity: 0.75, fontSize: 13 }}>
-          Mesmo vídeo = mesmo resultado (cache no servidor).
+          Mesmo vídeo = mesmo score (cache no servidor).
         </p>
 
         <div style={{ display: "grid", gap: 12, marginTop: 14 }}>
@@ -430,67 +421,9 @@ export default function Analyze() {
             <div style={{ fontWeight: 1000, marginBottom: 6 }}>🧠 Resumo</div>
             <div style={{ fontSize: 13, lineHeight: 1.45, opacity: 0.95 }}>{analysis.resumo || "—"}</div>
           </div>
-
-          <Section title="✅ Pontos fortes" items={analysis.pontos_fortes} />
-          <Section title="⚠️ Pontos fracos" items={analysis.pontos_fracos} />
-          <Section title="🛠️ Melhorias práticas" items={analysis.melhorias_praticas} />
-          <Section title="🎯 Ganchos" items={analysis.ganchos} />
-          <Section title="📝 Legendas" items={analysis.legendas} />
-
-          <div
-            style={{
-              borderRadius: 18,
-              border: "1px solid rgba(255,255,255,0.12)",
-              background: "rgba(255,255,255,0.06)",
-              padding: 14,
-            }}
-          >
-            <div style={{ fontWeight: 1000, marginBottom: 10 }}>🏷️ Hashtags</div>
-            <div style={{ fontSize: 13, opacity: 0.95, lineHeight: 1.4 }}>
-              {safeArray(analysis.hashtags).map((t) => (t.startsWith("#") ? t : `#${t}`)).join(" ")}
-            </div>
-          </div>
-
-          <div
-            style={{
-              borderRadius: 18,
-              border: "1px solid rgba(255,255,255,0.12)",
-              background: "rgba(255,255,255,0.06)",
-              padding: 14,
-            }}
-          >
-            <div style={{ fontWeight: 1000, marginBottom: 10 }}>💡 Observações</div>
-            <div style={{ fontSize: 13, opacity: 0.95, lineHeight: 1.4 }}>{analysis.observacoes || "—"}</div>
-          </div>
         </div>
       )}
     </div>
   );
 }
 
-function Section({ title, items }: { title: string; items?: string[] }) {
-  const list = safeArray(items);
-  return (
-    <div
-      style={{
-        borderRadius: 18,
-        border: "1px solid rgba(255,255,255,0.12)",
-        background: "rgba(255,255,255,0.06)",
-        padding: 14,
-      }}
-    >
-      <div style={{ fontWeight: 1000, marginBottom: 10 }}>{title}</div>
-      {list.length ? (
-        <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 8 }}>
-          {list.map((t, i) => (
-            <li key={i} style={{ fontSize: 13, opacity: 0.95, lineHeight: 1.35 }}>
-              {t}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <div style={{ fontSize: 13, opacity: 0.75 }}>Sem itens.</div>
-      )}
-    </div>
-  );
-}
