@@ -1,11 +1,13 @@
-return (
-  <div className="card">
-    <h1>📹 Analisar vídeo</h1>
-    <p>Envie um vídeo e veja o potencial de viralização com IA.</p>
+export default function Analyze() {
+  return (
+    <div className="card">
+      <h1>📹 Analisar vídeo</h1>
+      <p>
+        Agora a interface nova carregou ✅ <br />
+        Próximo passo: upload de vídeo + análise com IA.
+      </p>
 
-    <button className="button">
-      Analisar vídeo
-    </button>
-  </div>
-);
-
+      <button className="button">Enviar vídeo</button>
+    </div>
+  );
+}
