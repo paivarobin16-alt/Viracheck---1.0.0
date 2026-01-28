@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
 /* =========================
-   HELPERS
+   HELPERS HTTP
 ========================= */
 function send(res: VercelResponse, status: number, data: any) {
   res.status(status);
@@ -23,19 +23,17 @@ function parseBody(req: VercelRequest): any {
   return {};
 }
 
-/** 🔒 Garante image_url válido para a OpenAI */
+/* =========================
+   IMAGE NORMALIZER
+========================= */
 function normalizeImageUrl(input: any): string {
   if (!input) return "";
-
   const s = String(input).trim();
 
-  // URL normal
   if (s.startsWith("http://") || s.startsWith("https://")) return s;
-
-  // Data URL válido
   if (s.startsWith("data:image/")) return s;
 
-  // Base64 puro → converte para data URL
+  // base64 puro
   if (/^[A-Za-z0-9+/=]+$/.test(s)) {
     const isPng = s.startsWith("iVBOR");
     const mime = isPng ? "image/png" : "image/jpeg";
@@ -45,21 +43,15 @@ function normalizeImageUrl(input: any): string {
   return "";
 }
 
-/** Extrai output_text da Responses API */
 function extractOutputText(data: any): string {
   if (typeof data?.output_text === "string" && data.output_text.trim()) {
     return data.output_text;
   }
-
   if (Array.isArray(data?.output)) {
     for (const item of data.output) {
       if (item?.type === "message" && Array.isArray(item?.content)) {
         for (const part of item.content) {
-          if (
-            part?.type === "output_text" &&
-            typeof part?.text === "string" &&
-            part.text.trim()
-          ) {
+          if (part?.type === "output_text" && typeof part?.text === "string" && part.text.trim()) {
             return part.text;
           }
         }
@@ -70,12 +62,61 @@ function extractOutputText(data: any): string {
 }
 
 /* =========================
-   HANDLER
+   VERCEL KV (Upstash Redis)
+   - Uses REST API (no npm dependency)
+   Env required:
+   - KV_REST_API_URL
+   - KV_REST_API_TOKEN
 ========================= */
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse
-) {
+const KV_URL = process.env.KV_REST_API_URL;
+const KV_TOKEN = process.env.KV_REST_API_TOKEN;
+
+async function kvGet<T>(key: string): Promise<T | null> {
+  if (!KV_URL || !KV_TOKEN) return null;
+
+  const r = await fetch(`${KV_URL}/get/${encodeURIComponent(key)}`, {
+    headers: { Authorization: `Bearer ${KV_TOKEN}` },
+  });
+
+  if (!r.ok) return null;
+
+  const j = await r.json();
+  // Upstash REST format: { result: "..." } where result is string or null
+  if (j?.result == null) return null;
+
+  try {
+    return typeof j.result === "string" ? (JSON.parse(j.result) as T) : (j.result as T);
+  } catch {
+    return j.result as T;
+  }
+}
+
+async function kvSet(key: string, value: any, ttlSeconds = 60 * 60 * 24 * 30) {
+  if (!KV_URL || !KV_TOKEN) return;
+
+  const body = JSON.stringify(value);
+
+  // set key value
+  await fetch(`${KV_URL}/set/${encodeURIComponent(key)}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${KV_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body), // value as a JSON string
+  });
+
+  // expire key
+  await fetch(`${KV_URL}/expire/${encodeURIComponent(key)}/${ttlSeconds}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${KV_TOKEN}` },
+  });
+}
+
+/* =========================
+   MAIN HANDLER
+========================= */
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (req.method !== "POST") {
       return send(res, 405, { error: "Método não permitido. Use POST." });
@@ -85,18 +126,36 @@ export default async function handler(
     if (!apiKey) {
       return send(res, 500, {
         error: "OPENAI_API_KEY não configurada",
-        details:
-          "Configure em Vercel → Project Settings → Environment Variables",
+        details: "Configure em Vercel → Project Settings → Environment Variables",
       });
     }
 
     const body = parseBody(req);
 
-    const framesRaw = Array.isArray(body.frames) ? body.frames : [];
-    const videoMeta = body.video_meta || {};
-    const videoHash = String(body.video_hash || "");
+    const platform = String(body.platform || "Todas");
+    const hook = String(body.hook || "");
+    const description = String(body.description || "");
 
-    // Normaliza frames (aceita {image} ou string)
+    const video_hash = String(body.video_hash || "");
+    const video_meta = typeof body.video_meta === "object" && body.video_meta ? body.video_meta : {};
+    const framesRaw = Array.isArray(body.frames) ? body.frames : [];
+
+    if (!video_hash) {
+      return send(res, 400, { error: "video_hash é obrigatório (hash do vídeo)." });
+    }
+
+    // ✅ 1) BACKEND CACHE CHECK (same video => same result)
+    const cacheKey = `viracheck:analysis:${video_hash}`;
+    const cached = await kvGet<any>(cacheKey);
+
+    if (cached?.result) {
+      return send(res, 200, {
+        result: cached.result,
+        cached: true,
+      });
+    }
+
+    // ✅ 2) If not cached, validate frames then call OpenAI
     const normalizedImages = framesRaw
       .map((f: any) => normalizeImageUrl(f?.image ?? f))
       .filter(Boolean);
@@ -104,50 +163,42 @@ export default async function handler(
     if (!normalizedImages.length) {
       return send(res, 400, {
         error: "Nenhum frame válido foi recebido",
-        details:
-          "Os frames não estavam em formato de imagem válido (data:image ou base64).",
+        details: "Envie frames como data:image/... ou base64.",
       });
     }
-
     if (normalizedImages.length > 8) {
-      return send(res, 400, {
-        error: "Muitos frames",
-        details: "Envie no máximo 8 frames.",
-      });
+      return send(res, 400, { error: "Muitos frames", details: "Envie no máximo 8 frames." });
     }
 
-    /* =========================
-       PROMPT
-    ========================= */
     const system = `
 Você é especialista em viralização (TikTok, Reels, Shorts).
 Responda SEMPRE em português do Brasil.
 
 REGRA OBRIGATÓRIA:
 - O score final DEVE ser a soma de 5 critérios (0..20 cada):
-  hook_impacto,
-  qualidade_visual,
-  clareza_mensagem,
-  legibilidade_texto_legenda,
-  potencial_engajamento.
+  hook_impacto, qualidade_visual, clareza_mensagem,
+  legibilidade_texto_legenda, potencial_engajamento.
 
 IMPORTANTE:
-- Use frames + metadados do vídeo para diferenciar vídeos.
-- Vídeos diferentes NÃO devem ter sempre o mesmo score.
+- Use os FRAMES + metadados do vídeo para diferenciar vídeos.
 - Retorne SOMENTE JSON no formato exigido.
 `;
 
     const userText = `
-Identificador do vídeo (hash): ${videoHash || "não informado"}
+Plataforma: ${platform}
+Gancho (opcional): ${hook}
+Descrição (opcional): ${description}
+
+Hash do vídeo: ${video_hash}
 
 Metadados do vídeo:
-${JSON.stringify(videoMeta, null, 2)}
+${JSON.stringify(video_meta, null, 2)}
 
 Tarefa:
-1) Analise os frames enviados.
-2) Avalie os 5 critérios (0..20).
-3) Some e gere score_viralizacao (0..100).
-4) Gere sugestões práticas (ganchos, legendas, hashtags).
+1) Analise os frames.
+2) Dê notas (0..20) nos 5 critérios.
+3) score_viralizacao = soma dos 5 critérios (0..100).
+4) Gere sugestões (pontos fortes/fracos, melhorias, ganchos, legendas, hashtags).
 `;
 
     const input: any[] = [
@@ -156,10 +207,7 @@ Tarefa:
         role: "user",
         content: [
           { type: "input_text", text: userText },
-          ...normalizedImages.map((img) => ({
-            type: "input_image",
-            image_url: img,
-          })),
+          ...normalizedImages.map((img) => ({ type: "input_image", image_url: img })),
         ],
       },
     ];
@@ -175,16 +223,8 @@ Tarefa:
             hook_impacto: { type: "integer", minimum: 0, maximum: 20 },
             qualidade_visual: { type: "integer", minimum: 0, maximum: 20 },
             clareza_mensagem: { type: "integer", minimum: 0, maximum: 20 },
-            legibilidade_texto_legenda: {
-              type: "integer",
-              minimum: 0,
-              maximum: 20,
-            },
-            potencial_engajamento: {
-              type: "integer",
-              minimum: 0,
-              maximum: 20,
-            },
+            legibilidade_texto_legenda: { type: "integer", minimum: 0, maximum: 20 },
+            potencial_engajamento: { type: "integer", minimum: 0, maximum: 20 },
           },
           required: [
             "hook_impacto",
@@ -244,26 +284,19 @@ Tarefa:
 
     const raw = await resp.text();
     if (!resp.ok) {
-      return send(res, resp.status, {
-        error: "Falha na OpenAI API",
-        details: raw.slice(0, 2000),
-      });
+      return send(res, resp.status, { error: "Falha na OpenAI API", details: raw.slice(0, 2000) });
     }
 
     const data = JSON.parse(raw);
     const out = extractOutputText(data);
-
     if (!out) {
-      return send(res, 500, {
-        error: "OpenAI não retornou texto válido",
-        details: JSON.stringify(data).slice(0, 1500),
-      });
+      return send(res, 500, { error: "OpenAI não retornou texto", details: JSON.stringify(data).slice(0, 1200) });
     }
 
     const result = JSON.parse(out);
 
-    // 🔎 valida soma
-    const c = result.criterios || {};
+    // valida soma do score
+    const c = result?.criterios || {};
     const sum =
       (Number(c.hook_impacto) || 0) +
       (Number(c.qualidade_visual) || 0) +
@@ -271,18 +304,16 @@ Tarefa:
       (Number(c.legibilidade_texto_legenda) || 0) +
       (Number(c.potencial_engajamento) || 0);
 
-    if (result.score_viralizacao !== sum) {
+    if (Number(result.score_viralizacao) !== sum) {
       result.score_viralizacao = Math.max(0, Math.min(100, sum));
-      result.observacoes = `${
-        result.observacoes || ""
-      } (Score ajustado automaticamente pela soma dos critérios.)`.trim();
+      result.observacoes = `${result.observacoes || ""} (Score ajustado pela soma dos critérios.)`.trim();
     }
 
-    return send(res, 200, { result });
+    // ✅ 3) SAVE TO BACKEND CACHE (same video => same answer)
+    await kvSet(cacheKey, { result });
+
+    return send(res, 200, { result, cached: false });
   } catch (err: any) {
-    return send(res, 500, {
-      error: "Erro interno da Function",
-      details: err?.message || String(err),
-    });
+    return send(res, 500, { error: "Erro interno da Function", details: err?.message || String(err) });
   }
 }
