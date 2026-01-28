@@ -21,6 +21,29 @@ function parseBody(req: VercelRequest): any {
   return {};
 }
 
+function extractOutputText(data: any): string {
+  // 1) Caminho curto (às vezes existe)
+  if (typeof data?.output_text === "string" && data.output_text.trim()) {
+    return data.output_text;
+  }
+
+  // 2) Caminho robusto (como no seu log):
+  // data.output -> [{ type:"message", content:[{ type:"output_text", text:"..." }] }]
+  if (Array.isArray(data?.output)) {
+    for (const item of data.output) {
+      if (item?.type === "message" && Array.isArray(item?.content)) {
+        for (const part of item.content) {
+          if (part?.type === "output_text" && typeof part?.text === "string" && part.text.trim()) {
+            return part.text;
+          }
+        }
+      }
+    }
+  }
+
+  return "";
+}
+
 /* -------------------- handler -------------------- */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
@@ -48,17 +71,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return send(res, 400, { error: "Envie pelo menos 1 frame do vídeo." });
     }
 
-    // 🔒 proteção contra payload grande
+    // Proteção contra payload grande
     if (frames.length > 6) {
-      return send(res, 400, {
-        error: "Muitos frames enviados",
-        details: "Envie no máximo 6 frames.",
-      });
+      return send(res, 400, { error: "Muitos frames enviados", details: "Envie no máximo 6 frames." });
     }
 
-    /* -------------------- prompt -------------------- */
     const system =
-      "Você é especialista em viralização (TikTok, Reels, Shorts). Responda SEMPRE em pt-BR, de forma prática.";
+      "Você é especialista em viralização (TikTok, Reels, Shorts). Responda SEMPRE em pt-BR, prático e direto.";
 
     const userText = `
 Plataforma: ${platform}
@@ -66,7 +85,7 @@ Gancho (opcional): ${hook}
 Descrição (opcional): ${description}
 
 Analise os frames do vídeo e gere recomendações para aumentar viralização.
-Responda exclusivamente em JSON conforme o schema.
+Responda EXCLUSIVAMENTE em JSON conforme o schema.
 `;
 
     const input = [
@@ -83,7 +102,6 @@ Responda exclusivamente em JSON conforme o schema.
       },
     ];
 
-    /* -------------------- schema -------------------- */
     const schema = {
       type: "object",
       additionalProperties: false,
@@ -111,16 +129,15 @@ Responda exclusivamente em JSON conforme o schema.
       ],
     };
 
-    /* -------------------- openai call -------------------- */
     const payload = {
       model: "gpt-4o-mini",
-      temperature: 0, // estabilidade (mesmo vídeo → mesmo resultado)
+      temperature: 0,
       max_output_tokens: 900,
       input,
       text: {
         format: {
           type: "json_schema",
-          name: "viracheck_analysis", // ⚠️ obrigatório
+          name: "viracheck_analysis", // obrigatório
           strict: true,
           schema,
         },
@@ -152,37 +169,30 @@ Responda exclusivamente em JSON conforme o schema.
       data = JSON.parse(raw);
     } catch {
       console.error("Resposta não-JSON:", raw);
-      return send(res, 500, {
-        error: "Resposta inválida da OpenAI",
-        details: raw.slice(0, 500),
-      });
+      return send(res, 500, { error: "Resposta inválida da OpenAI", details: raw.slice(0, 500) });
     }
 
-    const outputText = data.output_text;
-    if (!outputText) {
+    const out = extractOutputText(data);
+    if (!out) {
       return send(res, 500, {
-        error: "OpenAI não retornou output_text",
-        details: JSON.stringify(data).slice(0, 800),
+        error: "OpenAI não retornou texto em output_text nem em output[].content[].text",
+        details: JSON.stringify(data).slice(0, 1200),
       });
     }
 
     let result: any;
     try {
-      result = JSON.parse(outputText);
+      result = JSON.parse(out);
     } catch {
       return send(res, 500, {
         error: "A IA não retornou JSON válido",
-        details: String(outputText).slice(0, 800),
+        details: String(out).slice(0, 1200),
       });
     }
 
     return send(res, 200, { result });
   } catch (err: any) {
     console.error("Function crash:", err);
-    return send(res, 500, {
-      error: "Erro interno da Function",
-      details: err?.message || String(err),
-    });
+    return send(res, 500, { error: "Erro interno da Function", details: err?.message || String(err) });
   }
 }
-
