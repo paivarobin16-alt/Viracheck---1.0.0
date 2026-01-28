@@ -1,76 +1,98 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
+/* =========================
+   TIPOS
+========================= */
 type Analysis = {
-  score_viralizacao?: number;
-  resumo?: string;
-  pontos_fortes?: string[];
-  pontos_fracos?: string[];
-  melhorias_praticas?: string[];
-  ganchos?: string[];
-  legendas?: string[];
-  hashtags?: string[];
-  observacoes?: string;
+  criterios: {
+    hook_impacto: number;
+    qualidade_visual: number;
+    clareza_mensagem: number;
+    legibilidade_texto_legenda: number;
+    potencial_engajamento: number;
+  };
+  score_viralizacao: number;
+  resumo: string;
+  pontos_fortes: string[];
+  pontos_fracos: string[];
+  melhorias_praticas: string[];
+  ganchos: string[];
+  legendas: string[];
+  hashtags: string[];
+  observacoes: string;
 };
 
+type Frame = {
+  t: number;
+  image: string;
+};
+
+/* =========================
+   UTILIDADES
+========================= */
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
 function safeArray(v: any): string[] {
-  if (Array.isArray(v)) return v.map((x) => String(x)).filter(Boolean);
-  return [];
+  return Array.isArray(v) ? v.map(String).filter(Boolean) : [];
 }
 
-function normalizeResult(anyJson: any): Analysis {
-  // A API pode retornar:
-  // 1) { result: {...} }
-  // 2) { ...analysis... }
-  // 3) { data: {...} } (variações)
-  const r = anyJson?.result ?? anyJson?.data ?? anyJson ?? {};
+function normalizeResult(json: any): Analysis {
+  const r = json?.result ?? json ?? {};
   return {
-    score_viralizacao: Number.isFinite(Number(r.score_viralizacao))
-      ? Number(r.score_viralizacao)
-      : 0,
-    resumo: typeof r.resumo === "string" ? r.resumo : "",
+    criterios: r.criterios,
+    score_viralizacao: Number(r.score_viralizacao || 0),
+    resumo: r.resumo || "",
     pontos_fortes: safeArray(r.pontos_fortes),
     pontos_fracos: safeArray(r.pontos_fracos),
     melhorias_praticas: safeArray(r.melhorias_praticas),
     ganchos: safeArray(r.ganchos),
     legendas: safeArray(r.legendas),
     hashtags: safeArray(r.hashtags),
-    observacoes: typeof r.observacoes === "string" ? r.observacoes : "",
+    observacoes: r.observacoes || "",
   };
 }
 
-async function copyToClipboard(text: string) {
+/* =========================
+   HASH DO VÍDEO (CACHE)
+========================= */
+async function sha256File(file: File): Promise<string> {
+  const buf = await file.arrayBuffer();
+  const hashBuf = await crypto.subtle.digest("SHA-256", buf);
+  return Array.from(new Uint8Array(hashBuf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function cacheKey(hash: string) {
+  return `viracheck:v2:${hash}`;
+}
+
+function loadCache(hash: string): Analysis | null {
   try {
-    await navigator.clipboard.writeText(text);
-    return true;
+    const raw = localStorage.getItem(cacheKey(hash));
+    return raw ? normalizeResult(JSON.parse(raw)) : null;
   } catch {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.style.position = "fixed";
-    ta.style.left = "-9999px";
-    document.body.appendChild(ta);
-    ta.focus();
-    ta.select();
-    const ok = document.execCommand("copy");
-    document.body.removeChild(ta);
-    return ok;
+    return null;
   }
 }
 
-/**
- * Extract frames spread across the video.
- * - Mobile friendly: uses fallback timeouts
- * - Uses 4 frames: 5%, 35%, 65%, 90%
- */
+function saveCache(hash: string, data: Analysis) {
+  try {
+    localStorage.setItem(cacheKey(hash), JSON.stringify({ result: data }));
+  } catch {}
+}
+
+/* =========================
+   EXTRAÇÃO DE FRAMES (6)
+========================= */
 async function extractFrames(
   file: File,
-  frameCount = 4,
+  frameCount = 6,
   targetW = 420,
   quality = 0.7
-): Promise<string[]> {
+): Promise<Frame[]> {
   const video = document.createElement("video");
   video.src = URL.createObjectURL(file);
   video.muted = true;
@@ -78,10 +100,9 @@ async function extractFrames(
 
   await new Promise<void>((resolve, reject) => {
     video.onloadedmetadata = () => resolve();
-    video.onerror = () => reject(new Error("Falha ao carregar o vídeo."));
+    video.onerror = () => reject(new Error("Erro ao carregar vídeo"));
   });
 
-  // Ajuda no Android: garante que dados carreguem
   await new Promise<void>((resolve) => {
     video.onloadeddata = () => resolve();
     setTimeout(resolve, 700);
@@ -89,27 +110,22 @@ async function extractFrames(
 
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas não suportado.");
+  if (!ctx) throw new Error("Canvas não suportado");
 
   const vw = video.videoWidth || 1280;
   const vh = video.videoHeight || 720;
-
   const scale = targetW / vw;
+
   canvas.width = targetW;
-  canvas.height = Math.max(1, Math.round(vh * scale));
+  canvas.height = Math.round(vh * scale);
 
-  const duration =
-    Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 1;
+  const duration = video.duration || 1;
+  const percents = [0.05, 0.18, 0.35, 0.55, 0.72, 0.9];
 
-  const percents = [0.05, 0.35, 0.65, 0.9].slice(0, frameCount);
-  const frames: string[] = [];
+  const frames: Frame[] = [];
 
-  for (const p of percents) {
-    const t = Math.min(
-      Math.max(duration * p, 0.08),
-      Math.max(duration - 0.15, 0.08)
-    );
-
+  for (const p of percents.slice(0, frameCount)) {
+    const t = Math.min(duration * p, duration - 0.15);
     video.currentTime = t;
 
     await new Promise<void>((resolve) => {
@@ -118,635 +134,147 @@ async function extractFrames(
         resolve();
       };
       video.addEventListener("seeked", done);
-      setTimeout(() => {
-        video.removeEventListener("seeked", done);
-        resolve();
-      }, 700);
+      setTimeout(done, 600);
     });
 
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    frames.push(canvas.toDataURL("image/jpeg", quality));
+    frames.push({ t, image: canvas.toDataURL("image/jpeg", quality) });
   }
 
   URL.revokeObjectURL(video.src);
   return frames;
 }
 
-function Pill({ children }: { children: React.ReactNode }) {
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "8px 10px",
-        borderRadius: 999,
-        border: "1px solid rgba(255,255,255,0.12)",
-        background: "rgba(10,14,24,0.6)",
-        fontSize: 12,
-        fontWeight: 900,
-      }}
-    >
-      {children}
-    </span>
-  );
-}
-
-function Card({
-  title,
-  icon,
-  right,
-  children,
-}: {
-  title: string;
-  icon?: string;
-  right?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <div
-      style={{
-        borderRadius: 18,
-        border: "1px solid rgba(255,255,255,0.12)",
-        background: "rgba(255,255,255,0.06)",
-        padding: 14,
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 10,
-          marginBottom: 10,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ fontSize: 16 }}>{icon || "📌"}</div>
-          <div style={{ fontWeight: 1000 }}>{title}</div>
-        </div>
-        {right}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function List({ items }: { items: string[] }) {
-  if (!items?.length) {
-    return <div style={{ opacity: 0.75, fontSize: 13 }}>Sem itens.</div>;
-  }
-  return (
-    <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 8 }}>
-      {items.map((t, idx) => (
-        <li
-          key={idx}
-          style={{ lineHeight: 1.35, fontSize: 13, opacity: 0.95 }}
-        >
-          {t}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function CopyList({
-  items,
-  copyLabel = "Copiar tudo",
-}: {
-  items: string[];
-  copyLabel?: string;
-}) {
-  const [copied, setCopied] = useState(false);
-
-  return (
-    <div style={{ display: "grid", gap: 10 }}>
-      {items?.length ? (
-        items.map((txt, idx) => (
-          <div
-            key={idx}
-            style={{
-              borderRadius: 14,
-              border: "1px solid rgba(255,255,255,0.12)",
-              background: "rgba(10,14,24,0.65)",
-              padding: 12,
-            }}
-          >
-            <div
-              style={{
-                fontSize: 13,
-                lineHeight: 1.35,
-                opacity: 0.95,
-                whiteSpace: "pre-wrap",
-              }}
-            >
-              {txt}
-            </div>
-          </div>
-        ))
-      ) : (
-        <div style={{ opacity: 0.75, fontSize: 13 }}>Sem sugestões.</div>
-      )}
-
-      {items?.length ? (
-        <button
-          onClick={async () => {
-            const ok = await copyToClipboard(items.join("\n"));
-            if (ok) setCopied(true);
-            setTimeout(() => setCopied(false), 900);
-          }}
-          style={{
-            padding: "10px 12px",
-            borderRadius: 14,
-            border: "1px solid rgba(255,255,255,0.12)",
-            background:
-              "linear-gradient(90deg, rgba(52,211,153,0.22), rgba(96,165,250,0.22), rgba(167,139,250,0.22))",
-            color: "white",
-            fontWeight: 1000,
-          }}
-        >
-          {copied ? "✅ Copiado!" : `📋 ${copyLabel}`}
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
-function HashtagChips({ tags }: { tags: string[] }) {
-  const [copied, setCopied] = useState(false);
-
-  if (!tags?.length) return <div style={{ opacity: 0.75 }}>Sem hashtags.</div>;
-
-  const normalized = tags.map((t) => (t.startsWith("#") ? t : `#${t}`));
-
-  return (
-    <div style={{ display: "grid", gap: 12 }}>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-        {normalized.map((t, idx) => (
-          <span
-            key={idx}
-            style={{
-              padding: "8px 10px",
-              borderRadius: 999,
-              border: "1px solid rgba(255,255,255,0.12)",
-              background: "rgba(10,14,24,0.65)",
-              fontSize: 12,
-              fontWeight: 900,
-              opacity: 0.95,
-            }}
-          >
-            {t}
-          </span>
-        ))}
-      </div>
-
-      <button
-        onClick={async () => {
-          const ok = await copyToClipboard(normalized.join(" "));
-          if (ok) setCopied(true);
-          setTimeout(() => setCopied(false), 900);
-        }}
-        style={{
-          padding: "10px 12px",
-          borderRadius: 14,
-          border: "1px solid rgba(255,255,255,0.12)",
-          background: "rgba(255,255,255,0.08)",
-          color: "white",
-          fontWeight: 1000,
-        }}
-      >
-        {copied ? "✅ Hashtags copiadas!" : "📋 Copiar hashtags"}
-      </button>
-    </div>
-  );
-}
-
-function LoadingOverlay({ text }: { text: string }) {
-  return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.55)",
-        backdropFilter: "blur(8px)",
-        display: "grid",
-        placeItems: "center",
-        zIndex: 9999,
-        padding: 16,
-      }}
-    >
-      <div
-        style={{
-          width: "min(420px, 100%)",
-          borderRadius: 18,
-          border: "1px solid rgba(255,255,255,0.12)",
-          background: "rgba(14,18,30,0.9)",
-          padding: 16,
-          boxShadow: "0 20px 80px rgba(0,0,0,0.6)",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div
-            style={{
-              width: 18,
-              height: 18,
-              borderRadius: 999,
-              border: "3px solid rgba(255,255,255,0.25)",
-              borderTopColor: "rgba(255,255,255,0.95)",
-              animation: "spin 0.9s linear infinite",
-            }}
-          />
-          <div style={{ fontWeight: 1000 }}>Processando…</div>
-        </div>
-        <div style={{ marginTop: 10, opacity: 0.8, fontSize: 13 }}>{text}</div>
-
-        <style>
-          {`@keyframes spin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }`}
-        </style>
-      </div>
-    </div>
-  );
-}
-
+/* =========================
+   COMPONENTE
+========================= */
 export default function Analyze() {
-  const [platform, setPlatform] = useState("Todas");
-  const [hook, setHook] = useState("");
-  const [description, setDescription] = useState("");
-
-  const [videoFile, setVideoFile] = useState<File | null>(null);
-  const videoUrl = useMemo(
-    () => (videoFile ? URL.createObjectURL(videoFile) : ""),
-    [videoFile]
-  );
-
-  const [loading, setLoading] = useState(false);
-  const [loadingText, setLoadingText] = useState("Preparando…");
-  const [message, setMessage] = useState<string>("");
+  const [video, setVideo] = useState<File | null>(null);
+  const [videoUrl, setVideoUrl] = useState("");
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [hash, setHash] = useState("");
 
-  async function handleAnalyze() {
-    setMessage("");
-    setAnalysis(null);
+  useEffect(() => {
+    if (video) {
+      setVideoUrl(URL.createObjectURL(video));
+    }
+  }, [video]);
 
-    if (!videoFile) {
-      setMessage("⚠️ Selecione um vídeo antes de analisar.");
+  async function handleAnalyze(force = false) {
+    if (!video) {
+      setMsg("Selecione um vídeo.");
       return;
     }
 
+    setMsg("");
     setLoading(true);
 
     try {
-      setLoadingText("Extraindo frames do vídeo…");
-      const frames = await extractFrames(videoFile, 4, 420, 0.7);
+      const videoHash = await sha256File(video);
+      setHash(videoHash);
 
-      setLoadingText("Enviando para a IA…");
+      if (!force) {
+        const cached = loadCache(videoHash);
+        if (cached) {
+          setAnalysis(cached);
+          setMsg("Resultado carregado do cache.");
+          setLoading(false);
+          return;
+        }
+      }
+
+      const frames = await extractFrames(video);
+
+      const video_meta = {
+        name: video.name,
+        size: video.size,
+        type: video.type,
+      };
+
       const resp = await fetch("/api/analyzeVideo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          platform,
-          hook,
-          description,
           frames,
+          video_meta,
+          video_hash: videoHash,
         }),
       });
 
-      // Lê como texto pra não crashar caso venha HTML/erro
       const raw = await resp.text();
-
-      let parsed: any = null;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        throw new Error(
-          `API retornou algo que não é JSON (${resp.status}). Trecho: ${raw.slice(
-            0,
-            280
-          )}`
-        );
-      }
+      const parsed = JSON.parse(raw);
 
       if (!resp.ok) {
-        const details =
-          parsed?.details ||
-          parsed?.error?.message ||
-          parsed?.error ||
-          raw.slice(0, 800);
-        throw new Error(`API ${resp.status}: ${details}`);
+        throw new Error(parsed?.error || "Erro da API");
       }
 
-      const normalized = normalizeResult(parsed);
-
-      // Evita “tela preta” por dados faltando
-      setAnalysis(normalized);
-      setMessage("✅ Análise concluída!");
+      const result = normalizeResult(parsed);
+      setAnalysis(result);
+      saveCache(videoHash, result);
+      setMsg("Análise concluída.");
     } catch (e: any) {
-      setMessage(`❌ ${e?.message || String(e)}`);
+      setMsg("Erro: " + e.message);
     } finally {
       setLoading(false);
     }
   }
 
-  const score = clamp(Number(analysis?.score_viralizacao || 0), 0, 100);
+  const score = clamp(analysis?.score_viralizacao || 0, 0, 100);
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        color: "white",
-        background:
-          "radial-gradient(1200px 600px at 20% 0%, rgba(96,165,250,0.20), transparent 50%), radial-gradient(900px 600px at 90% 10%, rgba(52,211,153,0.14), transparent 55%), #0b0d12",
-        padding: 16,
-      }}
-    >
-      {loading ? <LoadingOverlay text={loadingText} /> : null}
+    <div style={{ padding: 16, color: "white", background: "#0b0d12", minHeight: "100vh" }}>
+      <h1 style={{ fontWeight: 900 }}>🎬 Viracheck AI</h1>
+      <p>Análise consistente: mesmo vídeo → mesmo score</p>
 
-      <div
-        style={{
-          maxWidth: 900,
-          margin: "0 auto",
-          borderRadius: 22,
-          border: "1px solid rgba(255,255,255,0.12)",
-          background: "rgba(255,255,255,0.06)",
-          padding: 16,
-          boxShadow: "0 18px 70px rgba(0,0,0,0.45)",
+      <input
+        type="file"
+        accept="video/*"
+        onChange={(e) => {
+          setVideo(e.target.files?.[0] || null);
+          setAnalysis(null);
+          setMsg("");
         }}
-      >
-        {/* Header */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "flex-start",
-            justifyContent: "space-between",
-            gap: 12,
-          }}
-        >
-          <div>
-            <h1 style={{ margin: 0, fontSize: 20, fontWeight: 1000 }}>
-              📹 Viracheck AI — Analisar vídeo
-            </h1>
-            <p style={{ margin: "6px 0 0", opacity: 0.75, fontSize: 13 }}>
-              Envie um vídeo e receba sugestões práticas para melhorar e viralizar.
-            </p>
-          </div>
+      />
 
-          <Pill>🇧🇷 PT-BR</Pill>
-        </div>
+      {videoUrl && <video src={videoUrl} controls style={{ width: "100%", marginTop: 12 }} />}
 
-        {/* Form */}
-        <div style={{ display: "grid", gap: 12, marginTop: 14 }}>
-          <div style={{ display: "grid", gap: 10 }}>
-            <label style={{ fontSize: 12, opacity: 0.75 }}>Plataforma</label>
-            <select
-              value={platform}
-              onChange={(e) => setPlatform(e.target.value)}
-              style={{
-                width: "100%",
-                padding: 12,
-                borderRadius: 14,
-                border: "1px solid rgba(255,255,255,0.12)",
-                background: "rgba(10,14,24,0.92)",
-                color: "white",
-                fontWeight: 900,
-              }}
-            >
-              <option value="Todas">Todas</option>
-              <option value="TikTok">TikTok</option>
-              <option value="Instagram Reels">Instagram Reels</option>
-              <option value="YouTube Shorts">YouTube Shorts</option>
-              <option value="Kwai">Kwai</option>
-            </select>
-          </div>
-
-          <div style={{ display: "grid", gap: 10 }}>
-            <label style={{ fontSize: 12, opacity: 0.75 }}>Gancho (opcional)</label>
-            <input
-              value={hook}
-              onChange={(e) => setHook(e.target.value)}
-              placeholder='Ex: "Você tá fazendo isso errado..."'
-              style={{
-                width: "100%",
-                padding: 12,
-                borderRadius: 14,
-                border: "1px solid rgba(255,255,255,0.12)",
-                background: "rgba(10,14,24,0.92)",
-                color: "white",
-              }}
-            />
-          </div>
-
-          <div style={{ display: "grid", gap: 10 }}>
-            <label style={{ fontSize: 12, opacity: 0.75 }}>
-              Descrição do vídeo (opcional)
-            </label>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="Descreva o que acontece no vídeo…"
-              style={{
-                width: "100%",
-                padding: 12,
-                minHeight: 90,
-                borderRadius: 14,
-                border: "1px solid rgba(255,255,255,0.12)",
-                background: "rgba(10,14,24,0.92)",
-                color: "white",
-                resize: "vertical",
-              }}
-            />
-          </div>
-
-          <div style={{ display: "grid", gap: 10 }}>
-            <label style={{ fontSize: 12, opacity: 0.75 }}>Upload do vídeo</label>
-            <input
-              type="file"
-              accept="video/*"
-              onChange={(e) => setVideoFile(e.target.files?.[0] || null)}
-              style={{
-                width: "100%",
-                padding: 12,
-                borderRadius: 14,
-                border: "1px dashed rgba(255,255,255,0.22)",
-                background: "rgba(255,255,255,0.04)",
-                color: "white",
-              }}
-            />
-
-            {videoFile && (
-              <div style={{ marginTop: 8 }}>
-                <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 8 }}>
-                  Preview: <b style={{ opacity: 0.95 }}>{videoFile.name}</b>
-                </div>
-                <video
-                  src={videoUrl}
-                  controls
-                  playsInline
-                  style={{
-                    width: "100%",
-                    borderRadius: 16,
-                    border: "1px solid rgba(255,255,255,0.12)",
-                    background: "#000",
-                  }}
-                />
-              </div>
-            )}
-          </div>
-
-          <button
-            onClick={handleAnalyze}
-            disabled={loading}
-            style={{
-              width: "100%",
-              padding: "14px 14px",
-              borderRadius: 16,
-              border: "1px solid rgba(255,255,255,0.14)",
-              background:
-                "linear-gradient(90deg, #34d399 0%, #60a5fa 55%, #a78bfa 100%)",
-              color: "#0b1220",
-              fontWeight: 1000,
-              fontSize: 16,
-              boxShadow: "0 18px 50px rgba(96,165,250,0.22)",
-              cursor: loading ? "not-allowed" : "pointer",
-              opacity: loading ? 0.85 : 1,
-            }}
-          >
-            {loading ? "Analisando..." : "Analisar com IA"}
-          </button>
-
-          {message && (
-            <div
-              style={{
-                padding: "10px 12px",
-                borderRadius: 14,
-                border: "1px solid rgba(255,255,255,0.12)",
-                background: "rgba(255,255,255,0.06)",
-                fontSize: 13,
-                whiteSpace: "pre-wrap",
-              }}
-            >
-              {message}
-            </div>
-          )}
-        </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        <button onClick={() => handleAnalyze(false)}>Analisar</button>
+        <button onClick={() => handleAnalyze(true)}>Reanalisar</button>
       </div>
 
-      {/* Results */}
+      {loading && <p>⏳ Analisando...</p>}
+      {msg && <p>{msg}</p>}
+
       {analysis && (
-        <div style={{ maxWidth: 900, margin: "14px auto 0", display: "grid", gap: 12 }}>
-          <Card
-            title="Resultado"
-            icon="📊"
-            right={<Pill>Score: {score}/100</Pill>}
-          >
-            <div style={{ display: "grid", gap: 10 }}>
-              <div
-                style={{
-                  width: "100%",
-                  height: 10,
-                  borderRadius: 999,
-                  background: "rgba(255,255,255,0.08)",
-                  border: "1px solid rgba(255,255,255,0.10)",
-                  overflow: "hidden",
-                }}
-              >
-                <div
-                  style={{
-                    width: `${score}%`,
-                    height: "100%",
-                    borderRadius: 999,
-                    background:
-                      "linear-gradient(90deg, #34d399 0%, #60a5fa 55%, #a78bfa 100%)",
-                  }}
-                />
-              </div>
+        <div style={{ marginTop: 16 }}>
+          <h2>Score: {score}/100</h2>
+          <p>{analysis.resumo}</p>
 
-              <div
-                style={{
-                  borderRadius: 16,
-                  border: "1px solid rgba(255,255,255,0.12)",
-                  background: "rgba(10,14,24,0.65)",
-                  padding: 12,
-                }}
-              >
-                <div style={{ fontWeight: 1000, marginBottom: 6 }}>🧠 Resumo</div>
-                <div style={{ fontSize: 13, lineHeight: 1.45, opacity: 0.95 }}>
-                  {analysis.resumo || "—"}
-                </div>
-              </div>
-            </div>
-          </Card>
+          <h3>Pontos fortes</h3>
+          <ul>{analysis.pontos_fortes.map((p, i) => <li key={i}>{p}</li>)}</ul>
 
-          <Card title="Pontos fortes" icon="✅">
-            <List items={safeArray(analysis.pontos_fortes)} />
-          </Card>
+          <h3>Pontos fracos</h3>
+          <ul>{analysis.pontos_fracos.map((p, i) => <li key={i}>{p}</li>)}</ul>
 
-          <Card title="Pontos fracos" icon="⚠️">
-            <List items={safeArray(analysis.pontos_fracos)} />
-          </Card>
+          <h3>Melhorias</h3>
+          <ul>{analysis.melhorias_praticas.map((p, i) => <li key={i}>{p}</li>)}</ul>
 
-          <Card title="Melhorias práticas" icon="🛠️">
-            <List items={safeArray(analysis.melhorias_praticas)} />
-          </Card>
+          <h3>Ganchos</h3>
+          <ul>{analysis.ganchos.map((p, i) => <li key={i}>{p}</li>)}</ul>
 
-          <Card
-            title="Ganchos prontos"
-            icon="🎯"
-            right={
-              <button
-                onClick={() => copyToClipboard(safeArray(analysis.ganchos).join("\n"))}
-                style={{
-                  padding: "8px 10px",
-                  borderRadius: 12,
-                  border: "1px solid rgba(255,255,255,0.12)",
-                  background: "rgba(255,255,255,0.08)",
-                  color: "white",
-                  fontWeight: 1000,
-                  fontSize: 12,
-                }}
-              >
-                📋 Copiar
-              </button>
-            }
-          >
-            <CopyList items={safeArray(analysis.ganchos)} />
-          </Card>
+          <h3>Legendas</h3>
+          <ul>{analysis.legendas.map((p, i) => <li key={i}>{p}</li>)}</ul>
 
-          <Card
-            title="Legendas prontas"
-            icon="📝"
-            right={
-              <button
-                onClick={() =>
-                  copyToClipboard(safeArray(analysis.legendas).join("\n"))
-                }
-                style={{
-                  padding: "8px 10px",
-                  borderRadius: 12,
-                  border: "1px solid rgba(255,255,255,0.12)",
-                  background: "rgba(255,255,255,0.08)",
-                  color: "white",
-                  fontWeight: 1000,
-                  fontSize: 12,
-                }}
-              >
-                📋 Copiar
-              </button>
-            }
-          >
-            <CopyList items={safeArray(analysis.legendas)} />
-          </Card>
+          <h3>Hashtags</h3>
+          <p>{analysis.hashtags.join(" ")}</p>
 
-          <Card title="Hashtags" icon="🏷️">
-            <HashtagChips tags={safeArray(analysis.hashtags)} />
-          </Card>
-
-          <Card title="Observações" icon="💡">
-            <div style={{ fontSize: 13, lineHeight: 1.45, opacity: 0.95 }}>
-              {analysis.observacoes || "—"}
-            </div>
-          </Card>
+          <small>Hash do vídeo: {hash}</small>
         </div>
       )}
     </div>
   );
 }
+
