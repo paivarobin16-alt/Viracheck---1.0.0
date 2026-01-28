@@ -5,22 +5,22 @@ type AnalyzeReq = {
   platform?: string;
   hook?: string;
   description?: string;
-  frames?: string[]; // base64 data URLs: "data:image/jpeg;base64,..."
-  fingerprint?: string; // opcional, do client
+  frames?: string[];
+  fingerprint?: string;
 };
 
 const CACHE = new Map<string, { ts: number; data: any }>();
-const CACHE_TTL_MS = 1000 * 60 * 60; // 1h
+const CACHE_TTL_MS = 1000 * 60 * 60;
 
 function sha256(input: string) {
   return crypto.createHash("sha256").update(input).digest("hex");
 }
 
-function json(res: VercelResponse, status: number, body: any) {
+function send(res: VercelResponse, status: number, body: any) {
   res.status(status);
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
-  res.send(JSON.stringify(body));
+  res.end(JSON.stringify(body));
 }
 
 function cleanupCache() {
@@ -33,14 +33,15 @@ function cleanupCache() {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (req.method !== "POST") {
-      return json(res, 405, { error: "Método não permitido. Use POST." });
+      return send(res, 405, { error: "Método não permitido. Use POST." });
     }
 
     const key = process.env.OPENAI_API_KEY;
     if (!key) {
-      return json(res, 500, {
-        error:
-          "OPENAI_API_KEY não configurada. Configure em Vercel > Settings > Environment Variables e faça redeploy.",
+      return send(res, 500, {
+        error: "OPENAI_API_KEY não configurada na Vercel.",
+        details:
+          "Vercel > Project Settings > Environment Variables > OPENAI_API_KEY (Production) e faça Redeploy.",
       });
     }
 
@@ -51,7 +52,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const frames = Array.isArray(body.frames) ? body.frames.slice(0, 8) : [];
 
     if (frames.length === 0) {
-      return json(res, 400, { error: "Envie pelo menos 1 frame (imagem) do vídeo." });
+      return send(res, 400, { error: "Envie pelo menos 1 frame do vídeo." });
     }
 
     cleanupCache();
@@ -63,58 +64,48 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           platform,
           hook,
           description,
-          // usar só o começo dos frames pra reduzir custo de hash
           framesHead: frames.map((f) => f.slice(0, 120)),
         })
       );
 
     const cached = CACHE.get(stableKey);
     if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
-      return json(res, 200, { cached: true, fingerprint: stableKey, result: cached.data });
+      return send(res, 200, { cached: true, fingerprint: stableKey, result: cached.data });
     }
 
-    // Monta prompt
-    const system = `
-Você é um especialista em viralização (TikTok, Reels, Shorts) e copywriting.
-Responda SEMPRE em português do Brasil.
-Seja direto, prático e objetivo.`;
+    const system =
+      "Você é especialista em viralização (TikTok, Reels, Shorts) e copywriting. Responda sempre em pt-BR, direto e prático.";
 
     const userText = `
-Analise os frames do vídeo (são capturas do conteúdo).
+Analise os frames do vídeo (capturas).
 Plataforma: ${platform}
-Gancho sugerido (opcional): ${hook || "(não informado)"}
-Descrição (opcional): ${description || "(não informada)"}
+Gancho sugerido: ${hook || "(não informado)"}
+Descrição: ${description || "(não informada)"}
 
-Quero um diagnóstico + melhorias:
+Retorne:
 - Pontos fortes
 - Pontos fracos
-- Sugestões práticas (edição, ritmo, cortes, legendas, áudio, enquadramento)
-- 5 ideias de gancho (curtas e agressivas)
-- 5 ideias de legenda (PT-BR)
-- 15 hashtags (PT-BR, sem # repetida)
-- Nota de potencial de viralização (0 a 100)
+- Sugestões práticas
+- 5 ganchos
+- 5 legendas
+- 15 hashtags
+- Nota 0 a 100
 `;
 
-    // Content multimodal: texto + imagens
     const input = [
-      {
-        role: "system",
-        content: [{ type: "input_text", text: system }],
-      },
+      { role: "system", content: [{ type: "input_text", text: system }] },
       {
         role: "user",
         content: [
           { type: "input_text", text: userText },
           ...frames.map((dataUrl) => ({
             type: "input_image",
-            image_url: dataUrl,
+            image_url: dataUrl, // data URL é aceito
           })),
         ],
       },
     ];
 
-    // Respostas estruturadas via text.format (Responses API)
-    // Em vez de response_format, usa text.format. :contentReference[oaicite:1]{index=1}
     const schema = {
       name: "viracheck_analysis",
       strict: true,
@@ -155,7 +146,7 @@ Quero um diagnóstico + melhorias:
       body: JSON.stringify({
         model: "gpt-4o-mini",
         input,
-        temperature: 0, // reduz variação
+        temperature: 0,
         top_p: 1,
         max_output_tokens: 900,
         text: {
@@ -168,18 +159,18 @@ Quero um diagnóstico + melhorias:
     });
 
     const raw = await resp.text();
+
     if (!resp.ok) {
-      return json(res, resp.status, {
+      // devolve o erro REAL (é isso que você precisa ver no front)
+      return send(res, resp.status, {
         error: "Falha na OpenAI API",
-        details: raw,
+        status: resp.status,
+        details: raw.slice(0, 2000),
       });
     }
 
     const data = JSON.parse(raw);
 
-    // O conteúdo pode vir em output_text (string JSON) dependendo do formato,
-    // mas em structured outputs costuma vir já como texto válido JSON no output_text.
-    // Vamos tentar extrair do jeito mais robusto possível.
     let outText = "";
     try {
       outText = data.output_text || "";
@@ -195,25 +186,21 @@ Quero um diagnóstico + melhorias:
       }
     } catch {}
 
-    let result: any;
+    let result: any = null;
     try {
       result = outText ? JSON.parse(outText) : null;
     } catch {
-      // fallback: se já veio como objeto em algum campo (raro)
-      result = data;
-    }
-
-    if (!result || typeof result !== "object") {
-      return json(res, 500, {
-        error: "A IA não retornou JSON válido.",
-        details: { outTextPreview: String(outText).slice(0, 500) },
+      return send(res, 500, {
+        error: "A IA não retornou JSON válido",
+        details: String(outText).slice(0, 800),
       });
     }
 
     CACHE.set(stableKey, { ts: Date.now(), data: result });
 
-    return json(res, 200, { cached: false, fingerprint: stableKey, result });
+    return send(res, 200, { cached: false, fingerprint: stableKey, result });
   } catch (e: any) {
-    return json(res, 500, { error: "Erro interno", details: e?.message || String(e) });
+    return send(res, 500, { error: "Erro interno", details: e?.message || String(e) });
   }
 }
+
