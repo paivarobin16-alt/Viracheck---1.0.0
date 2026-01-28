@@ -22,13 +22,8 @@ function parseBody(req: VercelRequest): any {
 }
 
 function extractOutputText(data: any): string {
-  // 1) Caminho curto (às vezes existe)
-  if (typeof data?.output_text === "string" && data.output_text.trim()) {
-    return data.output_text;
-  }
+  if (typeof data?.output_text === "string" && data.output_text.trim()) return data.output_text;
 
-  // 2) Caminho robusto (como no seu log):
-  // data.output -> [{ type:"message", content:[{ type:"output_text", text:"..." }] }]
   if (Array.isArray(data?.output)) {
     for (const item of data.output) {
       if (item?.type === "message" && Array.isArray(item?.content)) {
@@ -40,7 +35,6 @@ function extractOutputText(data: any): string {
       }
     }
   }
-
   return "";
 }
 
@@ -71,21 +65,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return send(res, 400, { error: "Envie pelo menos 1 frame do vídeo." });
     }
 
-    // Proteção contra payload grande
     if (frames.length > 6) {
       return send(res, 400, { error: "Muitos frames enviados", details: "Envie no máximo 6 frames." });
     }
 
-    const system =
-      "Você é especialista em viralização (TikTok, Reels, Shorts). Responda SEMPRE em pt-BR, prático e direto.";
+    /* -------------------- prompt (FORÇANDO score variar) -------------------- */
+    const system = `
+Você é especialista em viralização (TikTok, Reels, Shorts).
+Responda SEMPRE em pt-BR.
+Você DEVE calcular o score com base nos frames: NÃO pode inventar.
+O score final deve ser a soma de 5 critérios (0..20 cada), total 0..100.
+Se o vídeo for muito simples/sem elementos, a nota deve ser menor.
+Se tiver boa composição/legenda/hook/clareza, a nota deve ser maior.
+`;
 
     const userText = `
 Plataforma: ${platform}
 Gancho (opcional): ${hook}
 Descrição (opcional): ${description}
 
-Analise os frames do vídeo e gere recomendações para aumentar viralização.
-Responda EXCLUSIVAMENTE em JSON conforme o schema.
+Tarefa:
+1) Analise os frames e dê notas (0..20) para:
+   - hook_impacto
+   - qualidade_visual
+   - clareza_mensagem
+   - legibilidade_texto_legenda
+   - potencial_engajamento
+2) Some tudo e retorne score_viralizacao = soma (0..100).
+3) Liste pontos fortes/fracos e melhorias práticas.
+4) Gere ganchos, legendas e hashtags relevantes para o conteúdo visto.
+
+IMPORTANTE:
+- O score_viralizacao deve ser exatamente a soma dos 5 critérios.
+- Não repita sempre o mesmo score: se frames são diferentes, notas devem refletir diferenças reais.
+- Retorne SOMENTE JSON no formato do schema.
 `;
 
     const input = [
@@ -102,11 +115,32 @@ Responda EXCLUSIVAMENTE em JSON conforme o schema.
       },
     ];
 
+    /* -------------------- schema (com critérios + soma obrigatória) -------------------- */
     const schema = {
       type: "object",
       additionalProperties: false,
       properties: {
+        criterios: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            hook_impacto: { type: "integer", minimum: 0, maximum: 20 },
+            qualidade_visual: { type: "integer", minimum: 0, maximum: 20 },
+            clareza_mensagem: { type: "integer", minimum: 0, maximum: 20 },
+            legibilidade_texto_legenda: { type: "integer", minimum: 0, maximum: 20 },
+            potencial_engajamento: { type: "integer", minimum: 0, maximum: 20 },
+          },
+          required: [
+            "hook_impacto",
+            "qualidade_visual",
+            "clareza_mensagem",
+            "legibilidade_texto_legenda",
+            "potencial_engajamento",
+          ],
+        },
+
         score_viralizacao: { type: "integer", minimum: 0, maximum: 100 },
+
         resumo: { type: "string" },
         pontos_fortes: { type: "array", items: { type: "string" } },
         pontos_fracos: { type: "array", items: { type: "string" } },
@@ -117,6 +151,7 @@ Responda EXCLUSIVAMENTE em JSON conforme o schema.
         observacoes: { type: "string" },
       },
       required: [
+        "criterios",
         "score_viralizacao",
         "resumo",
         "pontos_fortes",
@@ -132,12 +167,12 @@ Responda EXCLUSIVAMENTE em JSON conforme o schema.
     const payload = {
       model: "gpt-4o-mini",
       temperature: 0,
-      max_output_tokens: 900,
+      max_output_tokens: 950,
       input,
       text: {
         format: {
           type: "json_schema",
-          name: "viracheck_analysis", // obrigatório
+          name: "viracheck_analysis",
           strict: true,
           schema,
         },
@@ -168,14 +203,13 @@ Responda EXCLUSIVAMENTE em JSON conforme o schema.
     try {
       data = JSON.parse(raw);
     } catch {
-      console.error("Resposta não-JSON:", raw);
       return send(res, 500, { error: "Resposta inválida da OpenAI", details: raw.slice(0, 500) });
     }
 
     const out = extractOutputText(data);
     if (!out) {
       return send(res, 500, {
-        error: "OpenAI não retornou texto em output_text nem em output[].content[].text",
+        error: "OpenAI não retornou texto",
         details: JSON.stringify(data).slice(0, 1200),
       });
     }
@@ -184,10 +218,26 @@ Responda EXCLUSIVAMENTE em JSON conforme o schema.
     try {
       result = JSON.parse(out);
     } catch {
-      return send(res, 500, {
-        error: "A IA não retornou JSON válido",
-        details: String(out).slice(0, 1200),
-      });
+      return send(res, 500, { error: "A IA não retornou JSON válido", details: out.slice(0, 1200) });
+    }
+
+    // ✅ validação server-side: score deve bater com soma
+    const c = result?.criterios || {};
+    const sum =
+      (Number(c.hook_impacto) || 0) +
+      (Number(c.qualidade_visual) || 0) +
+      (Number(c.clareza_mensagem) || 0) +
+      (Number(c.legibilidade_texto_legenda) || 0) +
+      (Number(c.potencial_engajamento) || 0);
+
+    const score = Number(result?.score_viralizacao) || 0;
+
+    // Se não bater, ajusta automaticamente para garantir consistência
+    if (sum !== score) {
+      result.score_viralizacao = Math.max(0, Math.min(100, sum));
+      result.observacoes =
+        (result.observacoes ? String(result.observacoes) + " " : "") +
+        "(Ajuste automático: score = soma dos critérios.)";
     }
 
     return send(res, 200, { result });
