@@ -46,13 +46,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const body = (req.body || {}) as AnalyzeReq;
+
     const platform = body.platform || "Todas";
     const hook = (body.hook || "").trim();
     const description = (body.description || "").trim();
     const frames = Array.isArray(body.frames) ? body.frames.slice(0, 8) : [];
 
     if (frames.length === 0) {
-      return send(res, 400, { error: "Envie pelo menos 1 frame do vídeo." });
+      return send(res, 400, { error: "Envie pelo menos 1 frame (imagem) do vídeo." });
     }
 
     cleanupCache();
@@ -77,7 +78,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       "Você é especialista em viralização (TikTok, Reels, Shorts) e copywriting. Responda sempre em pt-BR, direto e prático.";
 
     const userText = `
-Analise os frames do vídeo (capturas).
+Analise os frames do vídeo (capturas do conteúdo).
 Plataforma: ${platform}
 Gancho sugerido: ${hook || "(não informado)"}
 Descrição: ${description || "(não informada)"}
@@ -85,11 +86,11 @@ Descrição: ${description || "(não informada)"}
 Retorne:
 - Pontos fortes
 - Pontos fracos
-- Sugestões práticas
-- 5 ganchos
-- 5 legendas
-- 15 hashtags
-- Nota 0 a 100
+- Sugestões práticas (edição, ritmo, cortes, legendas, áudio, enquadramento)
+- 5 ganchos (curtos e agressivos)
+- 5 legendas (pt-BR)
+- 15 hashtags (pt-BR)
+- Nota de potencial de viralização (0 a 100)
 `;
 
     const input = [
@@ -100,14 +101,14 @@ Retorne:
           { type: "input_text", text: userText },
           ...frames.map((dataUrl) => ({
             type: "input_image",
-            image_url: dataUrl, // data URL é aceito
+            image_url: dataUrl,
           })),
         ],
       },
     ];
 
     const schema = {
-      name: "viracheck_analysis",
+      name: "viracheck_analysis_schema",
       strict: true,
       schema: {
         type: "object",
@@ -149,9 +150,12 @@ Retorne:
         temperature: 0,
         top_p: 1,
         max_output_tokens: 900,
+
+        // ✅ CORREÇÃO AQUI:
         text: {
           format: {
             type: "json_schema",
+            name: "viracheck_analysis", // <-- obrigatório (era isso que faltava)
             json_schema: schema,
           },
         },
@@ -161,7 +165,6 @@ Retorne:
     const raw = await resp.text();
 
     if (!resp.ok) {
-      // devolve o erro REAL (é isso que você precisa ver no front)
       return send(res, resp.status, {
         error: "Falha na OpenAI API",
         status: resp.status,
@@ -171,24 +174,24 @@ Retorne:
 
     const data = JSON.parse(raw);
 
+    // output_text pode trazer o JSON como string
     let outText = "";
-    try {
-      outText = data.output_text || "";
-      if (!outText && Array.isArray(data.output)) {
-        for (const item of data.output) {
-          if (item?.type === "message") {
-            const parts = item?.content || [];
-            for (const p of parts) {
-              if (p?.type === "output_text" && typeof p.text === "string") outText += p.text;
-            }
+    outText = data.output_text || "";
+
+    if (!outText && Array.isArray(data.output)) {
+      for (const item of data.output) {
+        if (item?.type === "message") {
+          const parts = item?.content || [];
+          for (const p of parts) {
+            if (p?.type === "output_text" && typeof p.text === "string") outText += p.text;
           }
         }
       }
-    } catch {}
+    }
 
-    let result: any = null;
+    let result: any;
     try {
-      result = outText ? JSON.parse(outText) : null;
+      result = JSON.parse(outText);
     } catch {
       return send(res, 500, {
         error: "A IA não retornou JSON válido",
@@ -197,7 +200,6 @@ Retorne:
     }
 
     CACHE.set(stableKey, { ts: Date.now(), data: result });
-
     return send(res, 200, { cached: false, fingerprint: stableKey, result });
   } catch (e: any) {
     return send(res, 500, { error: "Erro interno", details: e?.message || String(e) });
