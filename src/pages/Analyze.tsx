@@ -1,79 +1,93 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
+
+type ApiResponse = {
+  result?: any;
+  error?: string;
+  details?: string;
+  status?: number;
+};
+
+async function extractFrames(
+  file: File,
+  frameCount = 2,
+  targetW = 320,
+  quality = 0.5
+): Promise<string[]> {
+  const video = document.createElement("video");
+  video.src = URL.createObjectURL(file);
+  video.muted = true;
+  video.playsInline = true;
+  video.crossOrigin = "anonymous";
+
+  await new Promise<void>((resolve, reject) => {
+    video.onloadedmetadata = () => resolve();
+    video.onerror = () => reject(new Error("Falha ao carregar o vídeo."));
+  });
+
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas não suportado.");
+
+  const vw = video.videoWidth || 1280;
+  const vh = video.videoHeight || 720;
+
+  const scale = targetW / vw;
+  canvas.width = targetW;
+  canvas.height = Math.max(1, Math.round(vh * scale));
+
+  const duration = video.duration && isFinite(video.duration) ? video.duration : 1;
+
+  const frames: string[] = [];
+  for (let i = 0; i < frameCount; i++) {
+    const t = Math.min(duration - 0.05, (duration / (frameCount + 1)) * (i + 1));
+    video.currentTime = t;
+
+    await new Promise<void>((resolve) => {
+      const onSeeked = () => {
+        video.removeEventListener("seeked", onSeeked);
+        resolve();
+      };
+      video.addEventListener("seeked", onSeeked);
+    });
+
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    frames.push(canvas.toDataURL("image/jpeg", quality));
+  }
+
+  URL.revokeObjectURL(video.src);
+  return frames;
+}
 
 export default function Analyze() {
   const [platform, setPlatform] = useState("Todas");
   const [hook, setHook] = useState("");
   const [description, setDescription] = useState("");
+
   const [videoFile, setVideoFile] = useState<File | null>(null);
+  const videoUrl = useMemo(() => (videoFile ? URL.createObjectURL(videoFile) : ""), [videoFile]);
 
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string>("");
   const [result, setResult] = useState<any>(null);
 
-  // ===============================
-  // Extrair frames do vídeo
-  // ===============================
-  async function extractFrames(file: File, frameCount = 4): Promise<string[]> {
-    const video = document.createElement("video");
-    video.src = URL.createObjectURL(file);
-    video.crossOrigin = "anonymous";
-    video.muted = true;
-
-    await new Promise<void>((resolve) => {
-      video.onloadedmetadata = () => resolve();
-    });
-
-    const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d")!;
-
-    const targetWidth = 384;
-    const scale = targetWidth / video.videoWidth;
-    canvas.width = targetWidth;
-    canvas.height = video.videoHeight * scale;
-
-    const frames: string[] = [];
-    const duration = video.duration;
-
-    for (let i = 0; i < frameCount; i++) {
-      const time = (duration / (frameCount + 1)) * (i + 1);
-      video.currentTime = time;
-
-      await new Promise<void>((resolve) => {
-        video.onseeked = () => resolve();
-      });
-
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      frames.push(canvas.toDataURL("image/jpeg", 0.6));
-    }
-
-    URL.revokeObjectURL(video.src);
-    return frames;
-  }
-
-  // ===============================
-  // Enviar para API
-  // ===============================
   async function handleAnalyze() {
-    setError(null);
+    setMessage("");
     setResult(null);
 
     if (!videoFile) {
-      setError("Selecione um vídeo primeiro.");
+      setMessage("⚠️ Selecione um vídeo antes de analisar.");
       return;
     }
 
+    setLoading(true);
     try {
-      setLoading(true);
+      setMessage("⏳ Extraindo frames do vídeo (leve)...");
+      const frames = await extractFrames(videoFile, 2, 320, 0.5);
 
-      // 1️⃣ Extrai frames
-      const frames = await extractFrames(videoFile, 4);
-
-      // 2️⃣ Chama API (IMPORTANTE: tratamento de erro REAL)
+      setMessage("🤖 Enviando para a IA...");
       const resp = await fetch("/api/analyzeVideo", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           platform,
           hook,
@@ -85,99 +99,193 @@ export default function Analyze() {
       const raw = await resp.text();
 
       if (!resp.ok) {
-        // 🔥 AQUI aparece o erro real da OpenAI
-        throw new Error(`API ${resp.status}: ${raw}`);
+        // Mostra o erro real (inclui details da OpenAI se o backend devolver)
+        throw new Error(`API ${resp.status}: ${raw.slice(0, 1200)}`);
       }
 
-      const data = JSON.parse(raw);
+      const data = JSON.parse(raw) as ApiResponse;
+      if (!data.result) {
+        throw new Error(`Resposta inválida da API: ${raw.slice(0, 800)}`);
+      }
+
       setResult(data.result);
-    } catch (err: any) {
-      setError(err.message || "Erro desconhecido");
+      setMessage("✅ Análise concluída!");
+    } catch (e: any) {
+      setMessage(`❌ ${e?.message || String(e)}`);
     } finally {
       setLoading(false);
     }
   }
 
-  // ===============================
-  // UI
-  // ===============================
   return (
-    <div style={{ maxWidth: 520, margin: "0 auto", padding: 16 }}>
-      <h2>📁 Analisar vídeo</h2>
-      <p>Envie um vídeo e receba sugestões para melhorar e viralizar.</p>
+    <div className="card" style={{ padding: 18 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: 18 }}>📹 Analisar vídeo</h1>
+          <p style={{ margin: "6px 0 0", opacity: 0.75, fontSize: 13 }}>
+            Envie um vídeo e receba sugestões para melhorar e viralizar.
+          </p>
+        </div>
 
-      <label>Plataforma</label>
-      <select value={platform} onChange={(e) => setPlatform(e.target.value)}>
-        <option>Todas</option>
-        <option>TikTok</option>
-        <option>Instagram Reels</option>
-        <option>YouTube Shorts</option>
-      </select>
+        <span
+          style={{
+            fontSize: 12,
+            padding: "8px 10px",
+            borderRadius: 999,
+            border: "1px solid rgba(255,255,255,0.12)",
+            background: "rgba(255,255,255,0.06)",
+            opacity: 0.9,
+            whiteSpace: "nowrap",
+          }}
+        >
+          🇧🇷 PT-BR
+        </span>
+      </div>
 
-      <label>Gancho (opcional)</label>
-      <input
-        value={hook}
-        onChange={(e) => setHook(e.target.value)}
-        placeholder='Ex: "Você está fazendo isso errado..."'
-      />
+      <div style={{ marginTop: 14 }}>
+        <label style={{ fontSize: 12, opacity: 0.75 }}>Plataforma</label>
+        <select
+          value={platform}
+          onChange={(e) => setPlatform(e.target.value)}
+          style={{
+            width: "100%",
+            marginTop: 6,
+            padding: 12,
+            borderRadius: 12,
+            border: "1px solid rgba(255,255,255,0.12)",
+            background: "rgba(10,14,24,0.92)",
+            color: "white",
+          }}
+        >
+          <option value="Todas">Todas</option>
+          <option value="TikTok">TikTok</option>
+          <option value="Instagram Reels">Instagram Reels</option>
+          <option value="YouTube Shorts">YouTube Shorts</option>
+          <option value="Kwai">Kwai</option>
+        </select>
+      </div>
 
-      <label>Descrição do vídeo (opcional)</label>
-      <textarea
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-        placeholder="Descreva o que acontece no vídeo..."
-      />
+      <div style={{ marginTop: 12 }}>
+        <label style={{ fontSize: 12, opacity: 0.75 }}>Gancho (opcional)</label>
+        <input
+          value={hook}
+          onChange={(e) => setHook(e.target.value)}
+          placeholder='Ex: "Você tá fazendo isso errado..."'
+          style={{
+            width: "100%",
+            marginTop: 6,
+            padding: 12,
+            borderRadius: 12,
+            border: "1px solid rgba(255,255,255,0.12)",
+            background: "rgba(10,14,24,0.92)",
+            color: "white",
+          }}
+        />
+      </div>
 
-      <label>Upload do vídeo</label>
-      <input
-        type="file"
-        accept="video/*"
-        onChange={(e) => setVideoFile(e.target.files?.[0] || null)}
-      />
+      <div style={{ marginTop: 12 }}>
+        <label style={{ fontSize: 12, opacity: 0.75 }}>Descrição do vídeo (opcional)</label>
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="Descreva o que acontece no vídeo…"
+          style={{
+            width: "100%",
+            marginTop: 6,
+            padding: 12,
+            minHeight: 90,
+            borderRadius: 12,
+            border: "1px solid rgba(255,255,255,0.12)",
+            background: "rgba(10,14,24,0.92)",
+            color: "white",
+            resize: "vertical",
+          }}
+        />
+      </div>
 
-      <button
-        onClick={handleAnalyze}
-        disabled={loading}
-        style={{
-          marginTop: 16,
-          padding: 14,
-          width: "100%",
-          fontSize: 16,
-        }}
-      >
+      <div style={{ marginTop: 14 }}>
+        <label style={{ fontSize: 12, opacity: 0.75 }}>Upload do vídeo</label>
+
+        <input
+          type="file"
+          accept="video/*"
+          onChange={(e) => setVideoFile(e.target.files?.[0] || null)}
+          style={{
+            width: "100%",
+            marginTop: 6,
+            padding: 12,
+            borderRadius: 12,
+            border: "1px dashed rgba(255,255,255,0.22)",
+            background: "rgba(255,255,255,0.04)",
+            color: "white",
+          }}
+        />
+
+        {videoFile && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>
+              Preview: <b style={{ opacity: 0.95 }}>{videoFile.name}</b>
+            </div>
+            <video
+              src={videoUrl}
+              controls
+              playsInline
+              style={{
+                width: "100%",
+                borderRadius: 14,
+                border: "1px solid rgba(255,255,255,0.12)",
+                background: "#000",
+              }}
+            />
+          </div>
+        )}
+      </div>
+
+      <button className="button" onClick={handleAnalyze} disabled={loading} style={{ marginTop: 14 }}>
         {loading ? "Analisando..." : "Analisar com IA"}
       </button>
 
-      {/* 🔴 ERRO REAL DA API */}
-      {error && (
+      {message && (
         <div
           style={{
-            marginTop: 16,
-            background: "#3b0000",
-            color: "#ffb3b3",
-            padding: 12,
-            borderRadius: 8,
+            marginTop: 12,
+            padding: "10px 12px",
+            borderRadius: 12,
+            border: "1px solid rgba(255,255,255,0.12)",
+            background: "rgba(255,255,255,0.06)",
+            fontSize: 13,
             whiteSpace: "pre-wrap",
           }}
         >
-          ❌ {error}
+          {message}
         </div>
       )}
 
-      {/* ✅ RESULTADO */}
       {result && (
-        <pre
-          style={{
-            marginTop: 16,
-            background: "#0b0b0b",
-            color: "#7fffd4",
-            padding: 12,
-            borderRadius: 8,
-            overflowX: "auto",
-          }}
-        >
-          {JSON.stringify(result, null, 2)}
-        </pre>
+        <div style={{ marginTop: 14 }}>
+          <div
+            style={{
+              padding: 12,
+              borderRadius: 14,
+              border: "1px solid rgba(255,255,255,0.12)",
+              background: "rgba(255,255,255,0.06)",
+            }}
+          >
+            <div style={{ fontWeight: 900, marginBottom: 8 }}>📊 Resultado (JSON)</div>
+            <pre
+              style={{
+                margin: 0,
+                fontSize: 12,
+                opacity: 0.95,
+                overflowX: "auto",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+              }}
+            >
+              {JSON.stringify(result, null, 2)}
+            </pre>
+          </div>
+        </div>
       )}
     </div>
   );
