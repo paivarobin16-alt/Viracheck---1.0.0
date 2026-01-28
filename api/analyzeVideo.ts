@@ -33,7 +33,7 @@ function normalizeImageUrl(input: any): string {
   if (s.startsWith("http://") || s.startsWith("https://")) return s;
   if (s.startsWith("data:image/")) return s;
 
-  // base64 puro
+  // base64 puro (sem prefixo)
   if (/^[A-Za-z0-9+/=]+$/.test(s)) {
     const isPng = s.startsWith("iVBOR");
     const mime = isPng ? "image/png" : "image/jpeg";
@@ -43,6 +43,9 @@ function normalizeImageUrl(input: any): string {
   return "";
 }
 
+/* =========================
+   RESPONSES API OUTPUT TEXT
+========================= */
 function extractOutputText(data: any): string {
   if (typeof data?.output_text === "string" && data.output_text.trim()) {
     return data.output_text;
@@ -51,7 +54,11 @@ function extractOutputText(data: any): string {
     for (const item of data.output) {
       if (item?.type === "message" && Array.isArray(item?.content)) {
         for (const part of item.content) {
-          if (part?.type === "output_text" && typeof part?.text === "string" && part.text.trim()) {
+          if (
+            part?.type === "output_text" &&
+            typeof part?.text === "string" &&
+            part.text.trim()
+          ) {
             return part.text;
           }
         }
@@ -63,8 +70,7 @@ function extractOutputText(data: any): string {
 
 /* =========================
    VERCEL KV (Upstash Redis)
-   - Uses REST API (no npm dependency)
-   Env required:
+   ENV:
    - KV_REST_API_URL
    - KV_REST_API_TOKEN
 ========================= */
@@ -79,9 +85,8 @@ async function kvGet<T>(key: string): Promise<T | null> {
   });
 
   if (!r.ok) return null;
-
   const j = await r.json();
-  // Upstash REST format: { result: "..." } where result is string or null
+
   if (j?.result == null) return null;
 
   try {
@@ -94,19 +99,17 @@ async function kvGet<T>(key: string): Promise<T | null> {
 async function kvSet(key: string, value: any, ttlSeconds = 60 * 60 * 24 * 30) {
   if (!KV_URL || !KV_TOKEN) return;
 
-  const body = JSON.stringify(value);
+  const stringValue = JSON.stringify(value);
 
-  // set key value
   await fetch(`${KV_URL}/set/${encodeURIComponent(key)}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${KV_TOKEN}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(body), // value as a JSON string
+    body: JSON.stringify(stringValue),
   });
 
-  // expire key
   await fetch(`${KV_URL}/expire/${encodeURIComponent(key)}/${ttlSeconds}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${KV_TOKEN}` },
@@ -114,7 +117,7 @@ async function kvSet(key: string, value: any, ttlSeconds = 60 * 60 * 24 * 30) {
 }
 
 /* =========================
-   MAIN HANDLER
+   HANDLER
 ========================= */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
@@ -126,7 +129,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!apiKey) {
       return send(res, 500, {
         error: "OPENAI_API_KEY não configurada",
-        details: "Configure em Vercel → Project Settings → Environment Variables",
+        details: "Vercel → Project Settings → Environment Variables → OPENAI_API_KEY",
+      });
+    }
+
+    // KV é obrigatório para manter o mesmo score sempre
+    if (!KV_URL || !KV_TOKEN) {
+      return send(res, 500, {
+        error: "Vercel KV não configurado",
+        details:
+          "Crie um KV no Vercel (Storage → KV) e conecte ao projeto para gerar KV_REST_API_URL e KV_REST_API_TOKEN.",
       });
     }
 
@@ -140,48 +152,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const video_meta = typeof body.video_meta === "object" && body.video_meta ? body.video_meta : {};
     const framesRaw = Array.isArray(body.frames) ? body.frames : [];
 
-    if (!video_hash) {
-      return send(res, 400, { error: "video_hash é obrigatório (hash do vídeo)." });
-    }
+    if (!video_hash) return send(res, 400, { error: "video_hash é obrigatório." });
 
-    // ✅ 1) BACKEND CACHE CHECK (same video => same result)
-    const cacheKey = `viracheck:analysis:${video_hash}`;
-    const cached = await kvGet<any>(cacheKey);
-
+    // ✅ 1) SE JÁ EXISTE, RETORNA IGUAL
+    const key = `viracheck:analysis:${video_hash}`;
+    const cached = await kvGet<any>(key);
     if (cached?.result) {
-      return send(res, 200, {
-        result: cached.result,
-        cached: true,
-      });
+      return send(res, 200, { result: cached.result, cached: true });
     }
 
-    // ✅ 2) If not cached, validate frames then call OpenAI
+    // ✅ 2) SE NÃO EXISTE, ANALISA NORMAL
     const normalizedImages = framesRaw
       .map((f: any) => normalizeImageUrl(f?.image ?? f))
       .filter(Boolean);
 
     if (!normalizedImages.length) {
       return send(res, 400, {
-        error: "Nenhum frame válido foi recebido",
+        error: "Nenhum frame válido recebido",
         details: "Envie frames como data:image/... ou base64.",
       });
-    }
-    if (normalizedImages.length > 8) {
-      return send(res, 400, { error: "Muitos frames", details: "Envie no máximo 8 frames." });
     }
 
     const system = `
 Você é especialista em viralização (TikTok, Reels, Shorts).
-Responda SEMPRE em português do Brasil.
+Responda SEMPRE em pt-BR.
 
 REGRA OBRIGATÓRIA:
-- O score final DEVE ser a soma de 5 critérios (0..20 cada):
+- score_viralizacao = soma de 5 critérios (0..20 cada):
   hook_impacto, qualidade_visual, clareza_mensagem,
   legibilidade_texto_legenda, potencial_engajamento.
 
-IMPORTANTE:
-- Use os FRAMES + metadados do vídeo para diferenciar vídeos.
-- Retorne SOMENTE JSON no formato exigido.
+Use os FRAMES e metadados para diferenciar vídeos.
+Retorne SOMENTE JSON no schema exigido.
 `;
 
     const userText = `
@@ -191,26 +193,15 @@ Descrição (opcional): ${description}
 
 Hash do vídeo: ${video_hash}
 
-Metadados do vídeo:
+Metadados:
 ${JSON.stringify(video_meta, null, 2)}
 
 Tarefa:
 1) Analise os frames.
-2) Dê notas (0..20) nos 5 critérios.
-3) score_viralizacao = soma dos 5 critérios (0..100).
-4) Gere sugestões (pontos fortes/fracos, melhorias, ganchos, legendas, hashtags).
+2) Dê notas (0..20) para os 5 critérios.
+3) Faça score_viralizacao = soma (0..100).
+4) Gere pontos fortes/fracos, melhorias, ganchos, legendas, hashtags.
 `;
-
-    const input: any[] = [
-      { role: "system", content: [{ type: "input_text", text: system }] },
-      {
-        role: "user",
-        content: [
-          { type: "input_text", text: userText },
-          ...normalizedImages.map((img) => ({ type: "input_image", image_url: img })),
-        ],
-      },
-    ];
 
     const schema = {
       type: "object",
@@ -262,7 +253,16 @@ Tarefa:
       model: "gpt-4o-mini",
       temperature: 0,
       max_output_tokens: 900,
-      input,
+      input: [
+        { role: "system", content: [{ type: "input_text", text: system }] },
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: userText },
+            ...normalizedImages.map((img) => ({ type: "input_image", image_url: img })),
+          ],
+        },
+      ],
       text: {
         format: {
           type: "json_schema",
@@ -290,12 +290,12 @@ Tarefa:
     const data = JSON.parse(raw);
     const out = extractOutputText(data);
     if (!out) {
-      return send(res, 500, { error: "OpenAI não retornou texto", details: JSON.stringify(data).slice(0, 1200) });
+      return send(res, 500, { error: "OpenAI não retornou texto", details: JSON.stringify(data).slice(0, 1400) });
     }
 
     const result = JSON.parse(out);
 
-    // valida soma do score
+    // valida soma
     const c = result?.criterios || {};
     const sum =
       (Number(c.hook_impacto) || 0) +
@@ -309,11 +309,12 @@ Tarefa:
       result.observacoes = `${result.observacoes || ""} (Score ajustado pela soma dos critérios.)`.trim();
     }
 
-    // ✅ 3) SAVE TO BACKEND CACHE (same video => same answer)
-    await kvSet(cacheKey, { result });
+    // ✅ 3) SALVA PARA RETORNAR IGUAL SEMPRE
+    await kvSet(key, { result });
 
     return send(res, 200, { result, cached: false });
   } catch (err: any) {
     return send(res, 500, { error: "Erro interno da Function", details: err?.message || String(err) });
   }
 }
+
