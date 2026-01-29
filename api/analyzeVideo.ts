@@ -5,6 +5,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
 });
 
+// cache simples em memória (mesmo vídeo = mesmo score)
 const cache = new Map<string, any>();
 
 function extractJSON(text: string) {
@@ -23,56 +24,57 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const { video_hash } = req.body;
-    if (!video_hash) {
-      return res.status(400).json({ error: "video_hash obrigatório" });
+    const { video_fingerprint } = req.body;
+    if (!video_fingerprint) {
+      return res.status(400).json({ error: "video_fingerprint obrigatório" });
     }
 
-    if (cache.has(video_hash)) {
-      return res.status(200).json({ cached: true, result: cache.get(video_hash) });
+    // Retorna cache se já analisado
+    if (cache.has(video_fingerprint)) {
+      return res.status(200).json({
+        cached: true,
+        result: cache.get(video_fingerprint),
+      });
     }
-
-    const seed = video_hash
-      .split("")
-      .reduce((acc: number, c: string) => acc + c.charCodeAt(0), 0);
 
     const ai = await openai.responses.create({
       model: "gpt-4o-mini",
       temperature: 0,
-      max_output_tokens: 900,
+      max_output_tokens: 1000,
       input: [
         {
           role: "system",
           content: `
-Você é um analista profissional de vídeos virais (TikTok, Reels, Shorts).
-Avalie de forma CRÍTICA, REALISTA e OBJETIVA.
-Não seja genérico.
+Você é um especialista em viralização de vídeos curtos (TikTok, Reels, Shorts).
+Avalie de forma CRÍTICA, REALISTA e PRÁTICA.
+Nada de respostas genéricas.
 `,
         },
         {
           role: "user",
           content: `
-Considere que o vídeo é um short vertical (até 60s).
+Analise um vídeo curto (até 60s) com base nos critérios abaixo (0 a 10):
 
-Avalie com base nos critérios abaixo (0–10 cada):
+- Gancho inicial
+- Clareza da mensagem
+- Emoção gerada
+- Uso de tendência
+- Ritmo/dinamismo
+- Chamada para ação (CTA)
 
-- gancho
-- clareza_mensagem
-- emocao
-- tendencia
-- ritmo
-- cta
-
-Use o seed ${seed} para consistência.
+Regras:
+- Seja honesto (vídeos medianos devem ter score baixo)
+- Justifique o score
+- Pense como algoritmo de rede social
 
 Calcule o score final assim:
-gancho*2.5 + clareza*2 + emocao*2 + tendencia*1.5 + ritmo*1 + cta*1
+Gancho*2.5 + Clareza*2 + Emoção*2 + Tendência*1.5 + Ritmo*1 + CTA*1
 
 Retorne APENAS JSON válido neste formato:
 
 {
-  "score_viralizacao": number,
-  "criterios": {
+  "score": number,
+  "avaliacao": {
     "gancho": number,
     "clareza": number,
     "emocao": number,
@@ -80,13 +82,12 @@ Retorne APENAS JSON válido neste formato:
     "ritmo": number,
     "cta": number
   },
-  "matematica_score": string,
   "resumo": string,
   "pontos_fortes": string[],
   "pontos_fracos": string[],
   "melhorias_praticas": string[],
-  "ganchos": string[],
-  "legendas": string[],
+  "ganchos_sugeridos": string[],
+  "legendas_sugeridas": string[],
   "hashtags": string[],
   "musicas_recomendadas": string[],
   "observacoes": string
@@ -101,11 +102,14 @@ Idioma: PT-BR.
     const raw = ai.output_text || "";
     const parsed = extractJSON(raw);
 
-    if (!parsed || typeof parsed.score_viralizacao !== "number") {
-      return res.status(500).json({ error: "Resposta inválida da IA", raw });
+    if (!parsed || typeof parsed.score !== "number") {
+      return res.status(500).json({
+        error: "Resposta inválida da IA",
+        raw,
+      });
     }
 
-    cache.set(video_hash, parsed);
+    cache.set(video_fingerprint, parsed);
     return res.status(200).json({ cached: false, result: parsed });
   } catch (err: any) {
     return res.status(500).json({
