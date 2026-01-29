@@ -1,35 +1,15 @@
 import { useEffect, useState } from "react";
 import "../styles/analyze.css";
 
-type Result = {
-  score_viralizacao: number;
-  resumo: string;
-  pontos_fortes: string[];
-  pontos_fracos: string[];
-  melhorias_praticas: string[];
-  ganchos: string[];
-  legendas: string[];
-  hashtags: string[];
-  musicas_recomendadas: string[];
-  observacoes: string;
-};
-
 export default function Analyze() {
   const [file, setFile] = useState<File | null>(null);
   const [videoURL, setVideoURL] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<Result | null>(null);
-  const [history, setHistory] = useState<Result[]>([]);
-
-  useEffect(() => {
-    const saved = localStorage.getItem("viracheck-history");
-    if (saved) setHistory(JSON.parse(saved));
-  }, []);
+  const [loading, setLoading] = useState(false);
 
   async function analyze() {
     if (!file) return;
-
     setLoading(true);
     setError(null);
     setResult(null);
@@ -44,14 +24,9 @@ export default function Analyze() {
       });
 
       const data = await res.json();
-
-      if (!res.ok) throw new Error(data.error || "Erro na análise");
+      if (!res.ok) throw new Error(data.error);
 
       setResult(data.result);
-
-      const updated = [data.result, ...history].slice(0, 5);
-      setHistory(updated);
-      localStorage.setItem("viracheck-history", JSON.stringify(updated));
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -63,7 +38,7 @@ export default function Analyze() {
     <div className="app-bg">
       <div className="glass-card">
         <h1>🚀 ViraCheck AI</h1>
-        <p className="subtitle">Análise inteligente para viralização</p>
+        <p className="subtitle">Score real de viralização</p>
 
         <input
           type="file"
@@ -79,35 +54,30 @@ export default function Analyze() {
 
         {videoURL && <video src={videoURL} controls className="video" />}
 
-        <button className="main-btn" onClick={analyze} disabled={loading}>
+        <button className="main-btn" onClick={analyze}>
           {loading ? "Analisando..." : "Analisar com IA"}
         </button>
 
         {error && <div className="error">❌ {error}</div>}
 
         {result && (
-          <div className="result">
-            <h2>🔥 Score: {result.score_viralizacao}/100</h2>
-            <p>{result.resumo}</p>
+          <>
+            <div className="score">🔥 Score: {result.score_viralizacao}/100</div>
 
-            <h3>🎵 Músicas recomendadas</h3>
-            <ul>
-              {result.musicas_recomendadas.map((m, i) => (
-                <li key={i}>{m}</li>
-              ))}
-            </ul>
-          </div>
-        )}
+            <div className="card">
+              <b>Resumo</b>
+              <p>{result.resumo}</p>
+            </div>
 
-        {history.length > 0 && (
-          <div className="history">
-            <h3>📜 Histórico</h3>
-            {history.map((h, i) => (
-              <div key={i} className="history-item">
-                Score: {h.score_viralizacao}
-              </div>
-            ))}
-          </div>
+            <div className="card">
+              <b>Músicas recomendadas</b>
+              <ul>
+                {result.musicas_recomendadas.map((m: string, i: number) => (
+                  <li key={i}>{m}</li>
+                ))}
+              </ul>
+            </div>
+          </>
         )}
       </div>
     </div>
