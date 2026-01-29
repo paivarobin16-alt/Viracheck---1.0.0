@@ -16,7 +16,7 @@ export default function Footer() {
 
       <div>
         <a
-          href="/privacy"
+          href="/privacy.html"
           style={{
             color: "#60a5fa",
             textDecoration: "none",
