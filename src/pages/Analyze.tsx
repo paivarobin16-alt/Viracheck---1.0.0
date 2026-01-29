@@ -26,7 +26,7 @@ export default function Analyze() {
       });
 
       const data = await res.json();
-      if (!res.ok) throw new Error("Erro na análise");
+      if (!res.ok) throw new Error("Erro");
 
       setResult(data.result);
     } catch {
@@ -38,12 +38,24 @@ export default function Analyze() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-purple-700 via-indigo-700 to-blue-700 p-4">
-      <div className="w-full max-w-sm bg-[#0f172a] rounded-2xl p-4 shadow-2xl text-white">
-        <h1 className="text-center text-xl font-bold mb-2">🚀 ViraCheck AI</h1>
+      <div className="w-full max-w-md bg-[#0f172a] rounded-2xl p-4 shadow-2xl text-white">
+        <h1 className="text-center text-xl font-bold mb-1">
+          🚀 ViraCheck AI
+        </h1>
 
-        <p className="text-sm text-center opacity-80 mb-3">
+        <p className="text-center text-sm opacity-80 mb-4">
           Descubra o potencial real de viralização do seu vídeo
         </p>
+
+        {/* Como usar */}
+        <div className="bg-slate-800 rounded-lg p-3 text-sm mb-4">
+          <strong>Como usar:</strong>
+          <ol className="list-decimal list-inside mt-1 space-y-1 opacity-90">
+            <li>Faça upload do vídeo</li>
+            <li>Clique em “Analisar com IA”</li>
+            <li>Veja score e melhorias práticas</li>
+          </ol>
+        </div>
 
         <input
           type="file"
@@ -56,65 +68,71 @@ export default function Analyze() {
           <video
             src={URL.createObjectURL(video)}
             controls
-            className="rounded-lg mb-3"
+            className="rounded-xl mb-4 w-full"
           />
         )}
 
         <button
           onClick={analyze}
           disabled={loading}
-          className="w-full py-2 rounded-lg bg-gradient-to-r from-cyan-400 to-purple-500 font-semibold"
+          className="w-full py-2 rounded-xl bg-gradient-to-r from-cyan-400 to-purple-500 font-semibold text-black hover:opacity-90 transition"
         >
           {loading ? "Analisando..." : "Analisar com IA"}
         </button>
 
         {error && (
-          <div className="mt-3 bg-red-600/80 p-2 rounded text-sm">
+          <div className="mt-3 bg-red-600/80 p-2 rounded-lg text-sm">
             ❌ {error}
           </div>
         )}
 
         {result && (
-          <div className="mt-4 space-y-3">
+          <div className="mt-5 space-y-3">
+            {/* Score */}
             <div className="text-center text-lg font-bold">
               🔥 Score: {result.score}/100
             </div>
 
-            <div className="bg-slate-800 p-3 rounded">
+            {/* Diagnóstico */}
+            <div className="bg-slate-800 p-3 rounded-lg">
               <strong>Diagnóstico</strong>
               <p className="text-sm mt-1">{result.diagnostico}</p>
             </div>
 
-            <div className="bg-slate-800 p-3 rounded">
+            {/* Pontos fortes */}
+            <div className="bg-slate-800 p-3 rounded-lg">
               <strong>Pontos fortes</strong>
-              <ul className="list-disc list-inside text-sm">
+              <ul className="list-disc list-inside text-sm mt-1">
                 {result.pontos_fortes.map((p: string, i: number) => (
                   <li key={i}>{p}</li>
                 ))}
               </ul>
             </div>
 
-            <div className="bg-slate-800 p-3 rounded">
+            {/* Pontos fracos */}
+            <div className="bg-slate-800 p-3 rounded-lg">
               <strong>Pontos fracos</strong>
-              <ul className="list-disc list-inside text-sm">
+              <ul className="list-disc list-inside text-sm mt-1">
                 {result.pontos_fracos.map((p: string, i: number) => (
                   <li key={i}>{p}</li>
                 ))}
               </ul>
             </div>
 
-            <div className="bg-slate-800 p-3 rounded">
+            {/* Melhorias */}
+            <div className="bg-slate-800 p-3 rounded-lg">
               <strong>O que melhorar</strong>
-              <ul className="list-disc list-inside text-sm">
+              <ul className="list-disc list-inside text-sm mt-1">
                 {result.melhorias_praticas.map((p: string, i: number) => (
                   <li key={i}>{p}</li>
                 ))}
               </ul>
             </div>
 
-            <div className="bg-slate-800 p-3 rounded">
+            {/* Música */}
+            <div className="bg-slate-800 p-3 rounded-lg">
               <strong>🎵 Música recomendada</strong>
-              <ul className="list-disc list-inside text-sm">
+              <ul className="list-disc list-inside text-sm mt-1">
                 {result.musicas_recomendadas.map((p: string, i: number) => (
                   <li key={i}>{p}</li>
                 ))}
@@ -125,4 +143,4 @@ export default function Analyze() {
       </div>
     </div>
   );
-        }
+}
