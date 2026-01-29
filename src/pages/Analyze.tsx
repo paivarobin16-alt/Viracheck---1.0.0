@@ -7,6 +7,11 @@ type Result = {
   pontos_fracos: string[];
   melhorias: string[];
   musicas: string[];
+
+  // 🔥 NOVOS CAMPOS (opcionais – não quebram nada)
+  legendas?: string[];
+  titulos?: string[];
+  descricoes?: string[];
 };
 
 export default function Analyze() {
@@ -16,7 +21,6 @@ export default function Analyze() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // 🎥 Preview do vídeo
   useEffect(() => {
     if (!file) {
       setVideoUrl(null);
@@ -27,7 +31,6 @@ export default function Analyze() {
     return () => URL.revokeObjectURL(url);
   }, [file]);
 
-  // 🔐 Fingerprint estável
   async function fingerprintFile(file: File) {
     const base = `${file.name}-${file.size}-${file.lastModified}`;
     const buffer = new TextEncoder().encode(base);
@@ -102,15 +105,11 @@ export default function Analyze() {
           boxShadow: "0 20px 50px rgba(0,0,0,.4)",
         }}
       >
-        <h2 style={{ textAlign: "center", marginBottom: 6 }}>
-          🚀 ViraCheck AI
-        </h2>
-
+        <h2 style={{ textAlign: "center" }}>🚀 ViraCheck AI</h2>
         <p style={{ textAlign: "center", fontSize: 14, opacity: 0.8 }}>
           Descubra o potencial real de viralização do seu vídeo
         </p>
 
-        {/* 👋 BOAS-VINDAS + INSTRUÇÕES */}
         {!file && (
           <div
             style={{
@@ -119,22 +118,12 @@ export default function Analyze() {
               padding: 12,
               marginTop: 12,
               fontSize: 14,
-              lineHeight: 1.4,
             }}
           >
-            <strong>👋 Bem-vindo!</strong>
-            <p style={{ marginTop: 6 }}>
-              Para analisar seu primeiro vídeo, siga os passos abaixo:
-            </p>
-            <ol style={{ paddingLeft: 18 }}>
-              <li>
-                Clique em <strong>“Escolher arquivo”</strong> para carregar o
-                vídeo
-              </li>
-              <li>
-                Depois, toque em <strong>“Analisar com IA”</strong> para ver o
-                score e sugestões
-              </li>
+            <strong>👋 Como começar:</strong>
+            <ol style={{ paddingLeft: 18, marginTop: 6 }}>
+              <li>Escolha um vídeo</li>
+              <li>Clique em “Analisar com IA”</li>
             </ol>
           </div>
         )}
@@ -143,10 +132,7 @@ export default function Analyze() {
           type="file"
           accept="video/*"
           onChange={(e) => setFile(e.target.files?.[0] || null)}
-          style={{
-            marginTop: 14,
-            marginBottom: 12,
-          }}
+          style={{ marginTop: 14, marginBottom: 12 }}
         />
 
         {videoUrl && (
@@ -179,9 +165,7 @@ export default function Analyze() {
           {loading ? "Analisando..." : "Analisar com IA"}
         </button>
 
-        {error && (
-          <div style={{ marginTop: 12, color: "#f87171" }}>❌ {error}</div>
-        )}
+        {error && <p style={{ color: "#f87171" }}>❌ {error}</p>}
 
         {result && (
           <div style={{ marginTop: 16 }}>
@@ -189,32 +173,38 @@ export default function Analyze() {
             <p>{result.resumo}</p>
 
             <h4>Pontos fortes</h4>
-            <ul>
-              {result.pontos_fortes.map((p, i) => (
-                <li key={i}>{p}</li>
-              ))}
-            </ul>
+            <ul>{result.pontos_fortes.map((p, i) => <li key={i}>{p}</li>)}</ul>
 
             <h4>Pontos fracos</h4>
-            <ul>
-              {result.pontos_fracos.map((p, i) => (
-                <li key={i}>{p}</li>
-              ))}
-            </ul>
+            <ul>{result.pontos_fracos.map((p, i) => <li key={i}>{p}</li>)}</ul>
 
             <h4>O que melhorar</h4>
-            <ol>
-              {result.melhorias.map((m, i) => (
-                <li key={i}>{m}</li>
-              ))}
-            </ol>
+            <ol>{result.melhorias.map((m, i) => <li key={i}>{m}</li>)}</ol>
 
             <h4>🎵 Músicas recomendadas</h4>
-            <ul>
-              {result.musicas.map((m, i) => (
-                <li key={i}>{m}</li>
-              ))}
-            </ul>
+            <ul>{result.musicas.map((m, i) => <li key={i}>{m}</li>)}</ul>
+
+            {/* 🔥 NOVAS SEÇÕES */}
+            {result.titulos && (
+              <>
+                <h4>🏷️ Sugestões de título</h4>
+                <ul>{result.titulos.map((t, i) => <li key={i}>{t}</li>)}</ul>
+              </>
+            )}
+
+            {result.legendas && (
+              <>
+                <h4>📌 Sugestões de legenda</h4>
+                <ul>{result.legendas.map((l, i) => <li key={i}>{l}</li>)}</ul>
+              </>
+            )}
+
+            {result.descricoes && (
+              <>
+                <h4>📝 Sugestões de descrição</h4>
+                <ul>{result.descricoes.map((d, i) => <li key={i}>{d}</li>)}</ul>
+              </>
+            )}
           </div>
         )}
       </div>
