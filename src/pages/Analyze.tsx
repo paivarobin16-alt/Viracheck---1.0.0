@@ -1,183 +1,120 @@
-import React, { useMemo, useState } from "react";
+import { useState } from "react";
+import "../styles/analyze.css";
 
-async function sha256Hex(buffer: ArrayBuffer): Promise<string> {
-  const hash = await crypto.subtle.digest("SHA-256", buffer);
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-async function extractFrames(file: File, widthMax = 640, maxFrames = 12) {
-  const url = URL.createObjectURL(file);
-  const video = document.createElement("video");
-  video.src = url;
-  video.muted = true;
-  video.playsInline = true;
-
-  await new Promise<void>((resolve, reject) => {
-    video.onloadedmetadata = () => resolve();
-    video.onerror = () => reject(new Error("Falha ao carregar o vídeo"));
-  });
-
-  const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas não suportado");
-
-  const ratio = video.videoWidth / video.videoHeight || 1;
-  const w = Math.min(widthMax, video.videoWidth || widthMax);
-  const h = Math.round(w / ratio);
-
-  canvas.width = w;
-  canvas.height = h;
-
-  const duration = video.duration || 1;
-  const frames: string[] = [];
-
-  for (let i = 0; i < maxFrames; i++) {
-    const t = (duration * i) / maxFrames;
-
-    await new Promise<void>((resolve) => {
-      video.currentTime = t;
-      const onSeeked = () => {
-        video.removeEventListener("seeked", onSeeked);
-        resolve();
-      };
-      video.addEventListener("seeked", onSeeked);
-    });
-
-    ctx.drawImage(video, 0, 0, w, h);
-    frames.push(canvas.toDataURL("image/jpeg", 0.72));
-  }
-
-  URL.revokeObjectURL(url);
-  return frames;
-}
+type Result = {
+  score_viralizacao: number;
+  resumo: string;
+  pontos_fortes: string[];
+  pontos_fracos: string[];
+  melhorias_praticas: string[];
+  ganchos: string[];
+  legendas: string[];
+  hashtags: string[];
+  observacoes: string;
+};
 
 export default function Analyze() {
   const [file, setFile] = useState<File | null>(null);
+  const [videoURL, setVideoURL] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [status, setStatus] = useState("");
-  const [error, setError] = useState("");
-  const [result, setResult] = useState<any>(null);
-  const [cached, setCached] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<Result | null>(null);
 
-  const preview = useMemo(() => (file ? URL.createObjectURL(file) : ""), [file]);
+  async function handleAnalyze() {
+    if (!file) return;
 
-  async function analyze() {
+    setLoading(true);
+    setError(null);
+    setResult(null);
+
     try {
-      setLoading(true);
-      setError("");
-      setResult(null);
-      setCached(false);
+      // hash simples (nome + tamanho)
+      const video_hash = `${file.name}_${file.size}`;
 
-      if (!file) throw new Error("Selecione um vídeo.");
-
-      setStatus("Gerando fingerprint...");
-      const hash = await sha256Hex(await file.arrayBuffer());
-
-      setStatus("Extraindo frames...");
-      const frames = await extractFrames(file, 640, 12);
-
-      setStatus("Enviando para IA...");
-      const resp = await fetch("/api/analyzeVideo", {
+      const res = await fetch("/api/analyzeVideo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ video_hash: hash, frames }),
+        body: JSON.stringify({
+          video_hash,
+          frames: ["placeholder"], // API já usa cache
+        }),
       });
 
-      const data = await resp.json().catch(() => null);
+      const data = await res.json();
 
-      if (!resp.ok) {
-        const msg =
-          data?.details?.toString?.() ||
-          data?.error?.toString?.() ||
-          `Erro HTTP ${resp.status}`;
-        throw new Error(msg);
+      if (!res.ok) {
+        if (data?.details?.includes("rate_limit")) {
+          throw new Error(
+            "Limite da IA atingido. Aguarde alguns segundos e tente novamente."
+          );
+        }
+        throw new Error(data?.error || "Erro inesperado");
       }
 
       setResult(data.result);
-      setCached(Boolean(data.cached));
-      setStatus(data.cached ? "✅ Cache: mesmo vídeo, mesmo resultado." : "✅ Análise concluída!");
-    } catch (e: any) {
-      setStatus("");
-      setError(e?.message || "Erro inesperado");
+    } catch (err: any) {
+      setError(err.message);
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: "#0b0d12", color: "#fff", padding: 18 }}>
-      <div style={{ maxWidth: 640, margin: "0 auto" }}>
-        <h1 style={{ margin: 0, fontSize: 26, fontWeight: 900 }}>ViraCheck AI</h1>
-        <p style={{ opacity: 0.85, marginTop: 8 }}>
-          Upload do vídeo → frames → IA → score + sugestões (PT-BR)
+    <div className="analyze-page">
+      <div className="card">
+        <h1>🎯 ViraCheck AI</h1>
+        <p className="subtitle">
+          Upload do vídeo → IA → score + sugestões (PT-BR)
         </p>
 
-        <div style={{ background: "#121624", borderRadius: 16, padding: 14 }}>
-          <input
-            type="file"
-            accept="video/*"
-            onChange={(e) => setFile(e.target.files?.[0] || null)}
-            style={{ width: "100%" }}
-          />
+        <input
+          type="file"
+          accept="video/*"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) {
+              setFile(f);
+              setVideoURL(URL.createObjectURL(f));
+            }
+          }}
+        />
 
-          {preview && (
-            <video
-              src={preview}
-              controls
-              playsInline
-              style={{ width: "100%", marginTop: 12, borderRadius: 14, background: "#000" }}
-            />
-          )}
+        {videoURL && (
+          <video src={videoURL} controls className="video-preview" />
+        )}
 
-          <button
-            onClick={analyze}
-            disabled={!file || loading}
-            style={{
-              marginTop: 12,
-              width: "100%",
-              padding: 14,
-              borderRadius: 14,
-              border: "none",
-              fontWeight: 900,
-              fontSize: 16,
-              cursor: !file || loading ? "not-allowed" : "pointer",
-              opacity: !file || loading ? 0.6 : 1,
-              background: "linear-gradient(90deg,#34d399,#60a5fa)",
-              color: "#061018",
-            }}
-          >
-            {loading ? "Analisando..." : "Analisar"}
-          </button>
+        <button onClick={handleAnalyze} disabled={loading}>
+          {loading ? "Analisando..." : "Analisar com IA"}
+        </button>
 
-          {status && <div style={{ marginTop: 10, opacity: 0.85 }}>{status}</div>}
-          {error && (
-            <pre style={{ marginTop: 10, color: "#ff7070", whiteSpace: "pre-wrap" }}>{error}</pre>
-          )}
+        {loading && <div className="loader">⏳ Analisando vídeo...</div>}
 
-          {cached && (
-            <div style={{ marginTop: 10, color: "#34d399", fontWeight: 800 }}>
-              ✅ Esse vídeo já foi analisado antes (cache).
-            </div>
-          )}
-        </div>
+        {error && <div className="error-box">❌ {error}</div>}
 
         {result && (
-          <div style={{ marginTop: 14, background: "#121624", borderRadius: 16, padding: 14 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
-              <div style={{ fontWeight: 900 }}>✅ Resultado</div>
-              <div style={{ fontWeight: 900, fontSize: 18 }}>
-                Score: <span style={{ color: "#34d399" }}>{result.score_viralizacao}</span>
-              </div>
-            </div>
+          <div className="result-box">
+            <h2>🔥 Score: {result.score_viralizacao}/100</h2>
 
-            <p style={{ marginTop: 10, opacity: 0.9 }}>{result.resumo}</p>
+            <p>{result.resumo}</p>
 
-            <details>
-              <summary style={{ cursor: "pointer" }}>Ver JSON completo</summary>
-              <pre style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(result, null, 2)}</pre>
-            </details>
+            <h3>✅ Pontos fortes</h3>
+            <ul>{result.pontos_fortes.map((p, i) => <li key={i}>{p}</li>)}</ul>
+
+            <h3>⚠️ Pontos fracos</h3>
+            <ul>{result.pontos_fracos.map((p, i) => <li key={i}>{p}</li>)}</ul>
+
+            <h3>🚀 Melhorias práticas</h3>
+            <ul>
+              {result.melhorias_praticas.map((p, i) => (
+                <li key={i}>{p}</li>
+              ))}
+            </ul>
+
+            <h3>🎣 Ganchos</h3>
+            <ul>{result.ganchos.map((g, i) => <li key={i}>{g}</li>)}</ul>
+
+            <h3>🏷️ Hashtags</h3>
+            <p>{result.hashtags.join(" ")}</p>
           </div>
         )}
       </div>
