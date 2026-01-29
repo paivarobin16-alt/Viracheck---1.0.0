@@ -1,29 +1,38 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
+
+type Result = {
+  score: number;
+  resumo: string;
+  pontos_fortes: string[];
+  pontos_fracos: string[];
+  melhorias: string[];
+  musicas: string[];
+};
 
 export default function Analyze() {
   const [file, setFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [result, setResult] = useState<any>(null);
-  const [error, setError] = useState("");
+  const [result, setResult] = useState<Result | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
-  // 🔹 cria preview real do vídeo
+  // 🎥 Preview do vídeo
   useEffect(() => {
-    if (file) {
-      const url = URL.createObjectURL(file);
-      setVideoUrl(url);
-      return () => URL.revokeObjectURL(url);
-    } else {
+    if (!file) {
       setVideoUrl(null);
+      return;
     }
+    const url = URL.createObjectURL(file);
+    setVideoUrl(url);
+    return () => URL.revokeObjectURL(url);
   }, [file]);
 
-  async function generateFingerprint(file: File) {
+  // 🔐 Fingerprint forte e estável
+  async function fingerprintFile(file: File) {
     const base = `${file.name}-${file.size}-${file.lastModified}`;
-    const encoder = new TextEncoder();
-    const data = encoder.encode(base);
-    const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-    return Array.from(new Uint8Array(hashBuffer))
+    const buffer = new TextEncoder().encode(base);
+    const hash = await crypto.subtle.digest("SHA-256", buffer);
+    return Array.from(new Uint8Array(hash))
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
   }
@@ -33,11 +42,21 @@ export default function Analyze() {
 
     setLoading(true);
     setError("");
-    setResult(null); // 🔹 garante novo resultado sempre
+    setResult(null);
 
     try {
-      const fingerprint = await generateFingerprint(file);
+      const fingerprint = await fingerprintFile(file);
+      const cacheKey = `viracheck:${fingerprint}`;
 
+      // ✅ CACHE LOCAL (MESMO VÍDEO = MESMO RESULTADO)
+      const cached = localStorage.getItem(cacheKey);
+      if (cached) {
+        setResult(JSON.parse(cached));
+        setLoading(false);
+        return;
+      }
+
+      // 🔁 Chamada normal à API
       const res = await fetch("/api/analyzeVideo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -54,9 +73,11 @@ export default function Analyze() {
       const data = JSON.parse(text);
 
       if (!res.ok) {
-        throw new Error(data.error || "Erro ao analisar");
+        throw new Error(data.error || "Erro ao analisar vídeo");
       }
 
+      // 💾 salva cache
+      localStorage.setItem(cacheKey, JSON.stringify(data));
       setResult(data);
     } catch (err: any) {
       setError(err.message || "Erro inesperado");
@@ -137,32 +158,16 @@ export default function Analyze() {
             <p>{result.resumo}</p>
 
             <h4>Pontos fortes</h4>
-            <ul>
-              {result.pontos_fortes?.map((p: string, i: number) => (
-                <li key={i}>{p}</li>
-              ))}
-            </ul>
+            <ul>{result.pontos_fortes.map((p, i) => <li key={i}>{p}</li>)}</ul>
 
             <h4>Pontos fracos</h4>
-            <ul>
-              {result.pontos_fracos?.map((p: string, i: number) => (
-                <li key={i}>{p}</li>
-              ))}
-            </ul>
+            <ul>{result.pontos_fracos.map((p, i) => <li key={i}>{p}</li>)}</ul>
 
             <h4>O que melhorar</h4>
-            <ol>
-              {result.melhorias?.map((m: string, i: number) => (
-                <li key={i}>{m}</li>
-              ))}
-            </ol>
+            <ol>{result.melhorias.map((m, i) => <li key={i}>{m}</li>)}</ol>
 
             <h4>🎵 Músicas recomendadas</h4>
-            <ul>
-              {result.musicas?.map((m: string, i: number) => (
-                <li key={i}>{m}</li>
-              ))}
-            </ul>
+            <ul>{result.musicas.map((m, i) => <li key={i}>{m}</li>)}</ul>
           </div>
         )}
       </div>
