@@ -1,0 +1,92 @@
+.analyze-page {
+  min-height: 100vh;
+  background: radial-gradient(circle at top, #0f172a, #020617);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 16px;
+  color: #e5e7eb;
+}
+
+.card {
+  width: 100%;
+  max-width: 420px;
+  background: #020617;
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
+}
+
+h1 {
+  text-align: center;
+  margin-bottom: 4px;
+}
+
+.subtitle {
+  text-align: center;
+  font-size: 14px;
+  opacity: 0.7;
+  margin-bottom: 16px;
+}
+
+input[type="file"] {
+  width: 100%;
+  margin-bottom: 12px;
+}
+
+.video-preview {
+  width: 100%;
+  border-radius: 12px;
+  margin-bottom: 12px;
+}
+
+button {
+  width: 100%;
+  padding: 12px;
+  border-radius: 12px;
+  border: none;
+  font-size: 16px;
+  background: linear-gradient(90deg, #22c55e, #3b82f6);
+  color: black;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+}
+
+.loader {
+  margin-top: 12px;
+  text-align: center;
+  opacity: 0.8;
+}
+
+.error-box {
+  margin-top: 12px;
+  padding: 10px;
+  border-radius: 8px;
+  background: #7f1d1d;
+  color: #fecaca;
+}
+
+.result-box {
+  margin-top: 16px;
+  background: #020617;
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.result-box h2 {
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+.result-box h3 {
+  margin-top: 12px;
+  margin-bottom: 4px;
+}
+
+.result-box ul {
+  padding-left: 18px;
+}
