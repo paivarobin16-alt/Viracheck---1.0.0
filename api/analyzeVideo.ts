@@ -60,29 +60,28 @@ function extractOutputText(data: any): string {
 ========================= */
 const BLOB_TOKEN = process.env.BLOB_READ_WRITE_TOKEN;
 
+// ✅ pathname SEM "/" para não dar "Invalid pathname"
 function blobKey(hash: string) {
-  return `viracheck/analysis/${hash}.json`;
+  const clean = String(hash).toLowerCase().replace(/[^a-f0-9]/g, "").slice(0, 80);
+  return `viracheck_analysis_${clean}.json`;
 }
 
-async function blobGet(path: string) {
-  const r = await fetch(`https://blob.vercel-storage.com/${path}`, {
+async function blobGet(pathname: string) {
+  const r = await fetch(`https://blob.vercel-storage.com/${pathname}`, {
     headers: { Authorization: `Bearer ${BLOB_TOKEN}` },
   });
   if (!r.ok) return null;
   return await r.json();
 }
 
-async function blobPut(path: string, data: any) {
+async function blobPut(pathname: string, data: any) {
   const r = await fetch("https://blob.vercel-storage.com", {
     method: "PUT",
     headers: {
       Authorization: `Bearer ${BLOB_TOKEN}`,
       "Content-Type": "application/json",
-      "x-vercel-blob-pathname": path,
-
-      // ✅ Store público => "public"
+      "x-vercel-blob-pathname": pathname,
       "x-vercel-blob-access": "public",
-
       "x-vercel-blob-add-random-suffix": "0",
     },
     body: JSON.stringify(data),
@@ -153,22 +152,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      return send(res, 500, { error: "OPENAI_API_KEY ausente" });
-    }
-    if (!BLOB_TOKEN) {
-      return send(res, 500, { error: "BLOB_READ_WRITE_TOKEN ausente" });
-    }
+    if (!apiKey) return send(res, 500, { error: "OPENAI_API_KEY ausente" });
+    if (!BLOB_TOKEN) return send(res, 500, { error: "BLOB_READ_WRITE_TOKEN ausente" });
 
     const body = parseBody(req);
 
     const video_hash = String(body.video_hash || "").trim();
-    if (!video_hash) {
-      return send(res, 400, { error: "video_hash é obrigatório" });
-    }
+    if (!video_hash) return send(res, 400, { error: "video_hash é obrigatório" });
 
-    // ✅ Cache
     const cachePath = blobKey(video_hash);
+
+    // ✅ Cache: mesmo vídeo => mesmo resultado
     const cached = await blobGet(cachePath);
     if (cached?.result) {
       return send(res, 200, { result: cached.result, cached: true });
@@ -178,9 +172,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .map((f: any) => normalizeImageUrl(f?.image ?? f))
       .filter(Boolean);
 
-    if (!frames.length) {
-      return send(res, 400, { error: "Nenhum frame válido" });
-    }
+    if (!frames.length) return send(res, 400, { error: "Nenhum frame válido" });
 
     const system = `
 Você é especialista em viralização (TikTok, Reels, Shorts).
@@ -233,19 +225,13 @@ REGRAS IMPORTANTES:
     }
 
     const data = safeJsonParse(raw);
-    if (!data) {
-      return send(res, 500, { error: "OpenAI retornou algo não-JSON", details: raw.slice(0, 2000) });
-    }
+    if (!data) return send(res, 500, { error: "OpenAI retornou algo não-JSON", details: raw.slice(0, 2000) });
 
     const outText = extractOutputText(data);
-    if (!outText) {
-      return send(res, 500, { error: "OpenAI não retornou output_text", details: JSON.stringify(data).slice(0, 2000) });
-    }
+    if (!outText) return send(res, 500, { error: "OpenAI não retornou output_text", details: JSON.stringify(data).slice(0, 2000) });
 
     const result = safeJsonParse(outText);
-    if (!result) {
-      return send(res, 500, { error: "OpenAI retornou texto que não é JSON", details: outText.slice(0, 2000) });
-    }
+    if (!result) return send(res, 500, { error: "OpenAI retornou texto que não é JSON", details: outText.slice(0, 2000) });
 
     // 🔒 score determinístico (soma)
     const c = result.criterios;
@@ -263,4 +249,3 @@ REGRAS IMPORTANTES:
     return send(res, 500, { error: "Erro interno na Function", details: err?.message || String(err) });
   }
 }
-
