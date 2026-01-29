@@ -27,7 +27,7 @@ export default function Analyze() {
     return () => URL.revokeObjectURL(url);
   }, [file]);
 
-  // 🔐 Fingerprint forte e estável
+  // 🔐 Fingerprint estável
   async function fingerprintFile(file: File) {
     const base = `${file.name}-${file.size}-${file.lastModified}`;
     const buffer = new TextEncoder().encode(base);
@@ -48,7 +48,6 @@ export default function Analyze() {
       const fingerprint = await fingerprintFile(file);
       const cacheKey = `viracheck:${fingerprint}`;
 
-      // ✅ CACHE LOCAL (MESMO VÍDEO = MESMO RESULTADO)
       const cached = localStorage.getItem(cacheKey);
       if (cached) {
         setResult(JSON.parse(cached));
@@ -56,7 +55,6 @@ export default function Analyze() {
         return;
       }
 
-      // 🔁 Chamada normal à API
       const res = await fetch("/api/analyzeVideo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -72,11 +70,8 @@ export default function Analyze() {
       const text = await res.text();
       const data = JSON.parse(text);
 
-      if (!res.ok) {
-        throw new Error(data.error || "Erro ao analisar vídeo");
-      }
+      if (!res.ok) throw new Error(data.error || "Erro ao analisar vídeo");
 
-      // 💾 salva cache
       localStorage.setItem(cacheKey, JSON.stringify(data));
       setResult(data);
     } catch (err: any) {
@@ -107,15 +102,51 @@ export default function Analyze() {
           boxShadow: "0 20px 50px rgba(0,0,0,.4)",
         }}
       >
-        <h2 style={{ textAlign: "center", marginBottom: 12 }}>
+        <h2 style={{ textAlign: "center", marginBottom: 6 }}>
           🚀 ViraCheck AI
         </h2>
+
+        <p style={{ textAlign: "center", fontSize: 14, opacity: 0.8 }}>
+          Descubra o potencial real de viralização do seu vídeo
+        </p>
+
+        {/* 👋 BOAS-VINDAS + INSTRUÇÕES */}
+        {!file && (
+          <div
+            style={{
+              background: "#020617",
+              borderRadius: 12,
+              padding: 12,
+              marginTop: 12,
+              fontSize: 14,
+              lineHeight: 1.4,
+            }}
+          >
+            <strong>👋 Bem-vindo!</strong>
+            <p style={{ marginTop: 6 }}>
+              Para analisar seu primeiro vídeo, siga os passos abaixo:
+            </p>
+            <ol style={{ paddingLeft: 18 }}>
+              <li>
+                Clique em <strong>“Escolher arquivo”</strong> para carregar o
+                vídeo
+              </li>
+              <li>
+                Depois, toque em <strong>“Analisar com IA”</strong> para ver o
+                score e sugestões
+              </li>
+            </ol>
+          </div>
+        )}
 
         <input
           type="file"
           accept="video/*"
           onChange={(e) => setFile(e.target.files?.[0] || null)}
-          style={{ marginBottom: 12 }}
+          style={{
+            marginTop: 14,
+            marginBottom: 12,
+          }}
         />
 
         {videoUrl && (
@@ -158,16 +189,32 @@ export default function Analyze() {
             <p>{result.resumo}</p>
 
             <h4>Pontos fortes</h4>
-            <ul>{result.pontos_fortes.map((p, i) => <li key={i}>{p}</li>)}</ul>
+            <ul>
+              {result.pontos_fortes.map((p, i) => (
+                <li key={i}>{p}</li>
+              ))}
+            </ul>
 
             <h4>Pontos fracos</h4>
-            <ul>{result.pontos_fracos.map((p, i) => <li key={i}>{p}</li>)}</ul>
+            <ul>
+              {result.pontos_fracos.map((p, i) => (
+                <li key={i}>{p}</li>
+              ))}
+            </ul>
 
             <h4>O que melhorar</h4>
-            <ol>{result.melhorias.map((m, i) => <li key={i}>{m}</li>)}</ol>
+            <ol>
+              {result.melhorias.map((m, i) => (
+                <li key={i}>{m}</li>
+              ))}
+            </ol>
 
             <h4>🎵 Músicas recomendadas</h4>
-            <ul>{result.musicas.map((m, i) => <li key={i}>{m}</li>)}</ul>
+            <ul>
+              {result.musicas.map((m, i) => (
+                <li key={i}>{m}</li>
+              ))}
+            </ul>
           </div>
         )}
       </div>
