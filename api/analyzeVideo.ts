@@ -1,8 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { put, head, get } from "@vercel/blob";
 
 /* =========================
-   HELPERS HTTP
+   Helpers HTTP
 ========================= */
 function send(res: VercelResponse, status: number, data: any) {
   res.status(status);
@@ -25,7 +24,7 @@ function parseBody(req: VercelRequest): any {
 }
 
 /* =========================
-   IMAGE NORMALIZER
+   Image Normalizer
 ========================= */
 function normalizeImageUrl(input: any): string {
   if (!input) return "";
@@ -40,18 +39,19 @@ function normalizeImageUrl(input: any): string {
     const mime = isPng ? "image/png" : "image/jpeg";
     return `data:${mime};base64,${s}`;
   }
-
   return "";
 }
 
 function extractOutputText(data: any): string {
-  if (typeof data?.output_text === "string" && data.output_text.trim()) return data.output_text;
+  if (typeof data?.output_text === "string" && data.output_text.trim()) {
+    return data.output_text;
+  }
 
   if (Array.isArray(data?.output)) {
     for (const item of data.output) {
       if (item?.type === "message" && Array.isArray(item?.content)) {
         for (const part of item.content) {
-          if (part?.type === "output_text" && typeof part?.text === "string" && part.text.trim()) {
+          if (part?.type === "output_text" && typeof part.text === "string") {
             return part.text;
           }
         }
@@ -62,166 +62,90 @@ function extractOutputText(data: any): string {
 }
 
 /* =========================
-   BLOB CACHE
-   Env required:
-   - BLOB_READ_WRITE_TOKEN
+   Blob REST (cache por hash)
 ========================= */
-function blobPath(videoHash: string) {
-  return `viracheck/analysis/${videoHash}.json`;
+const BLOB_TOKEN = process.env.BLOB_READ_WRITE_TOKEN;
+
+function blobKey(hash: string) {
+  return `viracheck/analysis/${hash}.json`;
 }
 
-async function blobTryRead(videoHash: string): Promise<any | null> {
-  const path = blobPath(videoHash);
+async function blobGet(path: string) {
+  const r = await fetch(`https://blob.vercel-storage.com/${path}`, {
+    headers: { Authorization: `Bearer ${BLOB_TOKEN}` },
+  });
+  if (!r.ok) return null;
+  return r.json();
+}
 
-  try {
-    // primeiro testa se existe
-    await head(path);
-    // se existe, baixa
-    const file = await get(path);
-    if (!file?.body) return null;
+async function blobPut(path: string, data: any) {
+  const r = await fetch("https://blob.vercel-storage.com", {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${BLOB_TOKEN}`,
+      "Content-Type": "application/json",
+      "x-vercel-blob-pathname": path,
+      "x-vercel-blob-access": "private",
+      "x-vercel-blob-add-random-suffix": "0",
+    },
+    body: JSON.stringify(data),
+  });
 
-    const text = await file.text();
-    return JSON.parse(text);
-  } catch {
-    return null;
+  if (!r.ok) {
+    throw new Error(await r.text());
   }
 }
 
-async function blobWrite(videoHash: string, data: any) {
-  const path = blobPath(videoHash);
-  await put(path, JSON.stringify(data), {
-    access: "private",
-    contentType: "application/json",
-    addRandomSuffix: false,
-  });
-}
-
 /* =========================
-   HANDLER
+   Handler
 ========================= */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
-    if (req.method !== "POST") return send(res, 405, { error: "Método não permitido. Use POST." });
+    if (req.method !== "POST") {
+      return send(res, 405, { error: "Use POST" });
+    }
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      return send(res, 500, {
-        error: "OPENAI_API_KEY não configurada",
-        details: "Vercel → Project Settings → Environment Variables",
-      });
+      return send(res, 500, { error: "OPENAI_API_KEY ausente" });
     }
-
-    if (!process.env.BLOB_READ_WRITE_TOKEN) {
-      return send(res, 500, {
-        error: "BLOB_READ_WRITE_TOKEN não configurado",
-        details: "Vercel → Storage → Blob → Connect → cria a env automaticamente",
-      });
+    if (!BLOB_TOKEN) {
+      return send(res, 500, { error: "BLOB_READ_WRITE_TOKEN ausente" });
     }
 
     const body = parseBody(req);
-
-    const platform = String(body.platform || "Todas");
-    const hook = String(body.hook || "");
-    const description = String(body.description || "");
-
     const video_hash = String(body.video_hash || "");
-    const video_meta = typeof body.video_meta === "object" && body.video_meta ? body.video_meta : {};
-    const framesRaw = Array.isArray(body.frames) ? body.frames : [];
+    if (!video_hash) {
+      return send(res, 400, { error: "video_hash obrigatório" });
+    }
 
-    if (!video_hash) return send(res, 400, { error: "video_hash é obrigatório." });
-
-    // ✅ 1) CHECA SE JÁ EXISTE NO BLOB
-    const cached = await blobTryRead(video_hash);
+    // ✅ 1) Cache: se já analisado, retorna o MESMO resultado
+    const cachePath = blobKey(video_hash);
+    const cached = await blobGet(cachePath);
     if (cached?.result) {
       return send(res, 200, { result: cached.result, cached: true });
     }
 
-    // ✅ 2) SE NÃO EXISTE, ANALISA
-    const normalizedImages = framesRaw
+    // ✅ 2) Normaliza frames
+    const frames = (Array.isArray(body.frames) ? body.frames : [])
       .map((f: any) => normalizeImageUrl(f?.image ?? f))
       .filter(Boolean);
 
-    if (!normalizedImages.length) {
-      return send(res, 400, {
-        error: "Nenhum frame válido recebido",
-        details: "Envie frames como data:image/... ou base64.",
-      });
+    if (!frames.length) {
+      return send(res, 400, { error: "Nenhum frame válido" });
     }
 
     const system = `
 Você é especialista em viralização (TikTok, Reels, Shorts).
-Responda SEMPRE em pt-BR.
+Responda sempre em português do Brasil.
 
-REGRA OBRIGATÓRIA:
-- score_viralizacao = soma de 5 critérios (0..20 cada):
-  hook_impacto, qualidade_visual, clareza_mensagem,
-  legibilidade_texto_legenda, potencial_engajamento.
+REGRA:
+O score_viralizacao é a SOMA EXATA de:
+hook_impacto, qualidade_visual, clareza_mensagem,
+legibilidade_texto_legenda, potencial_engajamento (0–20 cada).
 
-Retorne SOMENTE JSON no schema exigido.
+Retorne SOMENTE JSON.
 `;
-
-    const userText = `
-Plataforma: ${platform}
-Gancho (opcional): ${hook}
-Descrição (opcional): ${description}
-
-Hash do vídeo: ${video_hash}
-
-Metadados:
-${JSON.stringify(video_meta, null, 2)}
-
-Tarefa:
-1) Analise os frames.
-2) Dê notas (0..20) para os 5 critérios.
-3) Faça score_viralizacao = soma (0..100).
-4) Gere pontos fortes/fracos, melhorias, ganchos, legendas, hashtags.
-`;
-
-    const schema = {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        criterios: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            hook_impacto: { type: "integer", minimum: 0, maximum: 20 },
-            qualidade_visual: { type: "integer", minimum: 0, maximum: 20 },
-            clareza_mensagem: { type: "integer", minimum: 0, maximum: 20 },
-            legibilidade_texto_legenda: { type: "integer", minimum: 0, maximum: 20 },
-            potencial_engajamento: { type: "integer", minimum: 0, maximum: 20 },
-          },
-          required: [
-            "hook_impacto",
-            "qualidade_visual",
-            "clareza_mensagem",
-            "legibilidade_texto_legenda",
-            "potencial_engajamento",
-          ],
-        },
-        score_viralizacao: { type: "integer", minimum: 0, maximum: 100 },
-        resumo: { type: "string" },
-        pontos_fortes: { type: "array", items: { type: "string" } },
-        pontos_fracos: { type: "array", items: { type: "string" } },
-        melhorias_praticas: { type: "array", items: { type: "string" } },
-        ganchos: { type: "array", items: { type: "string" } },
-        legendas: { type: "array", items: { type: "string" } },
-        hashtags: { type: "array", items: { type: "string" } },
-        observacoes: { type: "string" },
-      },
-      required: [
-        "criterios",
-        "score_viralizacao",
-        "resumo",
-        "pontos_fortes",
-        "pontos_fracos",
-        "melhorias_praticas",
-        "ganchos",
-        "legendas",
-        "hashtags",
-        "observacoes",
-      ],
-    };
 
     const payload = {
       model: "gpt-4o-mini",
@@ -232,17 +156,44 @@ Tarefa:
         {
           role: "user",
           content: [
-            { type: "input_text", text: userText },
-            ...normalizedImages.map((img) => ({ type: "input_image", image_url: img })),
+            { type: "input_text", text: "Analise os frames do vídeo." },
+            ...frames.map((img) => ({
+              type: "input_image",
+              image_url: img,
+            })),
           ],
         },
       ],
       text: {
         format: {
           type: "json_schema",
-          name: "viracheck_analysis",
+          name: "viracheck",
           strict: true,
-          schema,
+          schema: {
+            type: "object",
+            required: ["criterios", "score_viralizacao", "resumo"],
+            properties: {
+              criterios: {
+                type: "object",
+                required: [
+                  "hook_impacto",
+                  "qualidade_visual",
+                  "clareza_mensagem",
+                  "legibilidade_texto_legenda",
+                  "potencial_engajamento",
+                ],
+                properties: {
+                  hook_impacto: { type: "integer", minimum: 0, maximum: 20 },
+                  qualidade_visual: { type: "integer", minimum: 0, maximum: 20 },
+                  clareza_mensagem: { type: "integer", minimum: 0, maximum: 20 },
+                  legibilidade_texto_legenda: { type: "integer", minimum: 0, maximum: 20 },
+                  potencial_engajamento: { type: "integer", minimum: 0, maximum: 20 },
+                },
+              },
+              score_viralizacao: { type: "integer", minimum: 0, maximum: 100 },
+              resumo: { type: "string" },
+            },
+          },
         },
       },
     };
@@ -257,34 +208,33 @@ Tarefa:
     });
 
     const raw = await r.text();
-    if (!r.ok) return send(res, r.status, { error: "Falha na OpenAI API", details: raw.slice(0, 2000) });
-
-    const data = JSON.parse(raw);
-    const out = extractOutputText(data);
-    if (!out) return send(res, 500, { error: "OpenAI não retornou texto", details: JSON.stringify(data).slice(0, 1500) });
-
-    const result = JSON.parse(out);
-
-    // valida soma do score
-    const c = result?.criterios || {};
-    const sum =
-      (Number(c.hook_impacto) || 0) +
-      (Number(c.qualidade_visual) || 0) +
-      (Number(c.clareza_mensagem) || 0) +
-      (Number(c.legibilidade_texto_legenda) || 0) +
-      (Number(c.potencial_engajamento) || 0);
-
-    if (Number(result.score_viralizacao) !== sum) {
-      result.score_viralizacao = Math.max(0, Math.min(100, sum));
-      result.observacoes = `${result.observacoes || ""} (Score ajustado pela soma dos critérios.)`.trim();
+    if (!r.ok) {
+      return send(res, r.status, { error: "OpenAI error", details: raw });
     }
 
-    // ✅ 3) SALVA NO BLOB (mesmo vídeo => mesmo resultado)
-    await blobWrite(video_hash, { result });
+    const data = JSON.parse(raw);
+    const text = extractOutputText(data);
+    if (!text) {
+      return send(res, 500, { error: "OpenAI não retornou texto" });
+    }
+
+    const result = JSON.parse(text);
+
+    // 🔒 garante score determinístico
+    const c = result.criterios;
+    result.score_viralizacao =
+      c.hook_impacto +
+      c.qualidade_visual +
+      c.clareza_mensagem +
+      c.legibilidade_texto_legenda +
+      c.potencial_engajamento;
+
+    // ✅ 3) salva no blob
+    await blobPut(cachePath, { result });
 
     return send(res, 200, { result, cached: false });
   } catch (err: any) {
-    return send(res, 500, { error: "Erro interno", details: err?.message || String(err) });
+    return send(res, 500, { error: "Erro interno", details: err.message });
   }
 }
 
