@@ -1,26 +1,14 @@
 import { useState } from "react";
 import "../styles/analyze.css";
 
-type Result = {
-  score_viralizacao: number;
-  resumo: string;
-  pontos_fortes: string[];
-  pontos_fracos: string[];
-  melhorias_praticas: string[];
-  ganchos: string[];
-  legendas: string[];
-  hashtags: string[];
-  observacoes: string;
-};
-
 export default function Analyze() {
   const [file, setFile] = useState<File | null>(null);
   const [videoURL, setVideoURL] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<Result | null>(null);
+  const [result, setResult] = useState<any>(null);
 
-  async function handleAnalyze() {
+  async function analyze() {
     if (!file) return;
 
     setLoading(true);
@@ -36,27 +24,15 @@ export default function Analyze() {
         body: JSON.stringify({ video_hash }),
       });
 
-      const text = await res.text();
-
-      // ⚠️ Proteção TOTAL contra resposta inválida
-      let data: any;
-      try {
-        data = JSON.parse(text);
-      } catch {
-        throw new Error("A IA retornou uma resposta inválida. Tente novamente.");
-      }
+      const data = await res.json();
 
       if (!res.ok) {
-        throw new Error(
-          data?.details ||
-            data?.error ||
-            "Falha na OpenAI. Aguarde alguns segundos e tente novamente."
-        );
+        throw new Error(data.error || "Erro ao analisar");
       }
 
       setResult(data.result);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (e: any) {
+      setError(e.message);
     } finally {
       setLoading(false);
     }
@@ -82,41 +58,20 @@ export default function Analyze() {
           }}
         />
 
-        {videoURL && (
-          <video className="video" src={videoURL} controls />
-        )}
+        {videoURL && <video src={videoURL} controls className="video" />}
 
-        <button className="main-btn" onClick={handleAnalyze} disabled={loading}>
-          {loading ? "Analisando com IA..." : "Analisar com IA"}
+        <button className="main-btn" onClick={analyze} disabled={loading}>
+          {loading ? "Analisando..." : "Analisar com IA"}
         </button>
 
-        {loading && <div className="loader">🤖 Processando vídeo...</div>}
-
-        {error && (
-          <div className="error">
-            ❌ {error}
-          </div>
-        )}
+        {error && <div className="error">❌ {error}</div>}
 
         {result && (
           <div className="result">
             <div className="score">
               🔥 Score: <span>{result.score_viralizacao}</span>/100
             </div>
-
             <p>{result.resumo}</p>
-
-            <h3>✅ Pontos fortes</h3>
-            <ul>{result.pontos_fortes.map((p, i) => <li key={i}>{p}</li>)}</ul>
-
-            <h3>⚠️ Pontos fracos</h3>
-            <ul>{result.pontos_fracos.map((p, i) => <li key={i}>{p}</li>)}</ul>
-
-            <h3>🚀 Melhorias</h3>
-            <ul>{result.melhorias_praticas.map((p, i) => <li key={i}>{p}</li>)}</ul>
-
-            <h3>🏷️ Hashtags</h3>
-            <p className="tags">{result.hashtags.join(" ")}</p>
           </div>
         )}
       </div>
