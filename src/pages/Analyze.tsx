@@ -1,245 +1,211 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-
-type Platform = "todas" | "tiktok" | "reels" | "shorts";
+import { useEffect, useRef, useState } from "react";
 
 type AnalysisResult = {
-  fingerprint: string;
-  createdAt: number;
-  fileName: string;
-  durationSec: number;
-  platform: Platform;
   score: number;
-  diagnostico: string;
   resumo: string;
   pontos_fortes: string[];
   pontos_fracos: string[];
-  melhorias_praticas: string[];
-  musicas_recomendadas: string[];
+  melhorias: string[];
+  musicas: string[];
+  fingerprint: string;
+  duracao: string;
+  plataforma: string;
 };
 
-const LS_KEY = "viracheck.history.v1";
-const MAX_HISTORY = 12;
+type HistoryItem = {
+  filename: string;
+  score: number;
+  fingerprint: string;
+  createdAt: number;
+};
 
-/* ================= UTILIDADES ================= */
-
-function getVideoDuration(file: File): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const video = document.createElement("video");
-    video.preload = "metadata";
-    video.src = url;
-    video.onloadedmetadata = () => {
-      URL.revokeObjectURL(url);
-      resolve(video.duration || 0);
-    };
-    video.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error("Não foi possível ler o vídeo."));
-    };
-  });
-}
-
-async function fingerprintFile(file: File): Promise<string> {
-  const chunk = 512 * 1024;
-  const start = await file.slice(0, chunk).arrayBuffer();
-  const end =
-    file.size > chunk
-      ? await file.slice(file.size - chunk).arrayBuffer()
-      : new ArrayBuffer(0);
-
-  const meta = new TextEncoder().encode(
-    `${file.name}|${file.size}|${file.type}`
-  );
-
-  const combined = new Uint8Array(start.byteLength + end.byteLength + meta.byteLength);
-  combined.set(new Uint8Array(start), 0);
-  combined.set(new Uint8Array(end), start.byteLength);
-  combined.set(meta, start.byteLength + end.byteLength);
-
-  const hash = await crypto.subtle.digest("SHA-256", combined);
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-function scoreFromHash(hash: string) {
-  const n = parseInt(hash.slice(0, 8), 16);
-  return Math.min(98, Math.max(15, (n % 85) + 15));
-}
-
-function loadHistory(): AnalysisResult[] {
-  try {
-    return JSON.parse(localStorage.getItem(LS_KEY) || "[]");
-  } catch {
-    return [];
-  }
-}
-
-function saveHistory(items: AnalysisResult[]) {
-  localStorage.setItem(LS_KEY, JSON.stringify(items.slice(0, MAX_HISTORY)));
-}
-
-function timeAgo(ts: number) {
-  const m = Math.floor((Date.now() - ts) / 60000);
-  if (m < 1) return "agora";
-  if (m < 60) return `${m} min atrás`;
-  const h = Math.floor(m / 60);
-  return `${h}h atrás`;
-}
-
-/* ================= COMPONENTE ================= */
+const STORAGE_KEY = "viracheck_history_v1";
 
 export default function Analyze() {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
   const [file, setFile] = useState<File | null>(null);
-  const [videoUrl, setVideoUrl] = useState("");
-  const [platform, setPlatform] = useState<Platform>("todas");
-  const [hook, setHook] = useState("");
-  const [desc, setDesc] = useState("");
+  const [preview, setPreview] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
-  const [history, setHistory] = useState<AnalysisResult[]>([]);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
 
-  useEffect(() => setHistory(loadHistory()), []);
-
+  /* =========================
+     HISTÓRICO (LOCAL DO USUÁRIO)
+     ========================= */
   useEffect(() => {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      setHistory(JSON.parse(saved));
+    }
+  }, []);
+
+  function saveHistory(item: HistoryItem) {
+    const updated = [
+      item,
+      ...history.filter(h => h.fingerprint !== item.fingerprint),
+    ].slice(0, 5);
+
+    setHistory(updated);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+  }
+
+  /* ========================= */
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+
+    setFile(f);
+    setPreview(URL.createObjectURL(f));
+    setResult(null);
+    setError(null);
+  }
+
+  async function analyzeVideo() {
     if (!file) return;
-    const url = URL.createObjectURL(file);
-    setVideoUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [file]);
 
-  const canAnalyze = useMemo(() => !!file && !loading, [file, loading]);
+    setLoading(true);
+    setError(null);
 
-  async function analyze() {
     try {
-      setLoading(true);
-      setError("");
-      setResult(null);
+      const formData = new FormData();
+      formData.append("video", file);
 
-      if (!file) return;
+      const res = await fetch("/api/analyzeVideo", {
+        method: "POST",
+        body: formData,
+      });
 
-      const fingerprint = await fingerprintFile(file);
-      const cached = loadHistory().find((h) => h.fingerprint === fingerprint);
-      if (cached) {
-        setResult(cached);
-        setLoading(false);
-        return;
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || "Erro ao analisar vídeo");
       }
 
-      const duration = await getVideoDuration(file);
-      let score = scoreFromHash(fingerprint);
+      setResult(data);
 
-      if (duration >= 7 && duration <= 20) score += 8;
-      if (duration > 45) score -= 12;
-      if (hook.length > 6) score += 6;
-
-      score = Math.min(98, Math.max(15, score));
-
-      const result: AnalysisResult = {
-        fingerprint,
+      saveHistory({
+        filename: file.name,
+        score: data.score,
+        fingerprint: data.fingerprint,
         createdAt: Date.now(),
-        fileName: file.name,
-        durationSec: Number(duration.toFixed(1)),
-        platform,
-        score,
-        diagnostico: score >= 80 ? "Alto potencial 🚀" : score >= 50 ? "Médio ⚡" : "Baixo 📉",
-        resumo:
-          score >= 80
-            ? "Vídeo bem alinhado com conteúdo curto. Ajustes simples podem gerar muitos comentários."
-            : "O vídeo precisa de um gancho mais forte e CTA mais claro.",
-        pontos_fortes: [
-          "Formato vertical ideal",
-          "Boa duração para retenção",
-        ],
-        pontos_fracos: [
-          "Gancho inicial fraco",
-          "CTA pouco claro",
-        ],
-        melhorias_praticas: [
-          "Texto impactante no 1º segundo",
-          "Cortes ou zoom a cada 2s",
-          "Finalizar com CTA direto",
-        ],
-        musicas_recomendadas: [
-          "Beat acelerado (Reels/TikTok)",
-          "Trend do momento",
-          "Lo-fi se for conteúdo calmo",
-        ],
-      };
-
-      const next = [result, ...loadHistory()];
-      saveHistory(next);
-      setHistory(next);
-      setResult(result);
-    } catch (e: any) {
-      setError("Erro ao analisar vídeo.");
+      });
+    } catch (err: any) {
+      setError(err.message);
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div className="vc-bg">
-      <div className="vc-wrap">
-        <div className="vc-card">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-purple-600 via-indigo-600 to-blue-600 px-4">
+      <div className="w-full max-w-md bg-[#0f172a] rounded-2xl shadow-xl p-5 text-white">
 
-          <h1>🚀 ViraCheck AI</h1>
-          <p className="vc-muted">
-            Descubra o potencial real de viralização do seu vídeo
-          </p>
+        <h1 className="text-xl font-bold mb-1">🚀 ViraCheck AI</h1>
+        <p className="text-sm text-gray-300 mb-4">
+          Descubra o potencial real de viralização do seu vídeo
+        </p>
 
-          <select value={platform} onChange={(e) => setPlatform(e.target.value as Platform)}>
-            <option value="todas">Todas</option>
-            <option value="tiktok">TikTok</option>
-            <option value="reels">Instagram Reels</option>
-            <option value="shorts">YouTube Shorts</option>
-          </select>
+        <label className="block text-sm mb-1">Upload do vídeo</label>
+        <input
+          type="file"
+          accept="video/*"
+          onChange={handleFileChange}
+          className="mb-3 w-full text-sm"
+        />
 
-          <input placeholder="Gancho (opcional)" value={hook} onChange={(e) => setHook(e.target.value)} />
-          <textarea placeholder="Descrição do vídeo (opcional)" value={desc} onChange={(e) => setDesc(e.target.value)} />
+        {preview && (
+          <video
+            ref={videoRef}
+            src={preview}
+            controls
+            className="rounded-xl mb-4 w-full"
+          />
+        )}
 
-          <input type="file" accept="video/*" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+        <button
+          onClick={analyzeVideo}
+          disabled={loading || !file}
+          className="w-full py-2 rounded-xl font-semibold bg-gradient-to-r from-emerald-400 to-blue-500 disabled:opacity-50"
+        >
+          {loading ? "Analisando..." : "Analisar com IA"}
+        </button>
 
-          {videoUrl && <video src={videoUrl} controls />}
+        {error && (
+          <div className="mt-3 text-sm text-red-400">
+            ❌ {error}
+          </div>
+        )}
 
-          <button disabled={!canAnalyze} onClick={analyze}>
-            {loading ? "Analisando..." : "Analisar com IA"}
-          </button>
+        {result && (
+          <div className="mt-5 space-y-3 text-sm">
+            <div className="text-lg font-bold">
+              🔥 Score: {result.score}/100
+            </div>
 
-          {error && <div className="vc-alert-error">{error}</div>}
-
-          {result && (
             <div>
-              <h2>🔥 Score: {result.score}/100</h2>
-              <p>{result.diagnostico}</p>
-
-              <h3>Resumo</h3>
-              <p>{result.resumo}</p>
-
-              <h3>Pontos fortes</h3>
-              <ul>{result.pontos_fortes.map((p, i) => <li key={i}>{p}</li>)}</ul>
-
-              <h3>Pontos fracos</h3>
-              <ul>{result.pontos_fracos.map((p, i) => <li key={i}>{p}</li>)}</ul>
-
-              <h3>O que melhorar</h3>
-              <ol>{result.melhorias_praticas.map((m, i) => <li key={i}>{m}</li>)}</ol>
-
-              <h3>🎵 Músicas recomendadas</h3>
-              <ul>{result.musicas_recomendadas.map((m, i) => <li key={i}>{m}</li>)}</ul>
+              <strong>Resumo</strong>
+              <p className="text-gray-300">{result.resumo}</p>
             </div>
-          )}
 
-          <h3>📚 Histórico</h3>
-          {history.map((h) => (
-            <div key={h.fingerprint}>
-              {h.fileName} • {h.score} • {timeAgo(h.createdAt)}
+            <div>
+              <strong>Pontos fortes</strong>
+              <ul className="list-disc list-inside text-gray-300">
+                {result.pontos_fortes.map((p, i) => (
+                  <li key={i}>{p}</li>
+                ))}
+              </ul>
             </div>
-          ))}
 
-        </div>
+            <div>
+              <strong>Pontos fracos</strong>
+              <ul className="list-disc list-inside text-gray-300">
+                {result.pontos_fracos.map((p, i) => (
+                  <li key={i}>{p}</li>
+                ))}
+              </ul>
+            </div>
+
+            <div>
+              <strong>O que melhorar</strong>
+              <ul className="list-decimal list-inside text-gray-300">
+                {result.melhorias.map((m, i) => (
+                  <li key={i}>{m}</li>
+                ))}
+              </ul>
+            </div>
+
+            <div>
+              <strong>🎵 Músicas recomendadas</strong>
+              <ul className="list-disc list-inside text-gray-300">
+                {result.musicas.map((m, i) => (
+                  <li key={i}>{m}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+
+        {history.length > 0 && (
+          <div className="mt-6">
+            <h2 className="font-semibold mb-2">📁 Seu histórico</h2>
+            <div className="space-y-2 text-sm">
+              {history.map(h => (
+                <div
+                  key={h.fingerprint}
+                  className="flex justify-between bg-slate-800 rounded-lg px-3 py-2"
+                >
+                  <span className="truncate">{h.filename}</span>
+                  <span className="font-bold">{h.score}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
       </div>
     </div>
   );
-          }
+}
