@@ -93,12 +93,23 @@ async function blobPut(path: string, data: any) {
 
 /* =========================
    JSON Schema (strict)
-   ✅ additionalProperties:false em TODOS objetos
+   ✅ required do root inclui TODAS as keys de properties
 ========================= */
 const schema = {
   type: "object",
   additionalProperties: false,
-  required: ["criterios", "score_viralizacao", "resumo"],
+  required: [
+    "criterios",
+    "score_viralizacao",
+    "resumo",
+    "pontos_fortes",
+    "pontos_fracos",
+    "melhorias_praticas",
+    "ganchos",
+    "legendas",
+    "hashtags",
+    "observacoes",
+  ],
   properties: {
     criterios: {
       type: "object",
@@ -118,32 +129,17 @@ const schema = {
         potencial_engajamento: { type: "integer", minimum: 0, maximum: 20 },
       },
     },
+
     score_viralizacao: { type: "integer", minimum: 0, maximum: 100 },
     resumo: { type: "string" },
-    pontos_fortes: {
-      type: "array",
-      items: { type: "string" },
-    },
-    pontos_fracos: {
-      type: "array",
-      items: { type: "string" },
-    },
-    melhorias_praticas: {
-      type: "array",
-      items: { type: "string" },
-    },
-    ganchos: {
-      type: "array",
-      items: { type: "string" },
-    },
-    legendas: {
-      type: "array",
-      items: { type: "string" },
-    },
-    hashtags: {
-      type: "array",
-      items: { type: "string" },
-    },
+
+    pontos_fortes: { type: "array", items: { type: "string" } },
+    pontos_fracos: { type: "array", items: { type: "string" } },
+    melhorias_praticas: { type: "array", items: { type: "string" } },
+    ganchos: { type: "array", items: { type: "string" } },
+    legendas: { type: "array", items: { type: "string" } },
+    hashtags: { type: "array", items: { type: "string" } },
+
     observacoes: { type: "string" },
   },
 };
@@ -165,7 +161,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!BLOB_TOKEN) {
       return send(res, 500, {
         error: "BLOB_READ_WRITE_TOKEN ausente",
-        hint: "Crie um Vercel Blob e adicione o token nas variáveis",
+        hint: "Vercel Storage > Blob > pegue o token e adicione nas variáveis",
       });
     }
 
@@ -196,13 +192,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const system = `
 Você é especialista em viralização (TikTok, Reels, Shorts).
-Responda sempre em PT-BR.
+Responda SEMPRE em PT-BR.
 
 REGRAS IMPORTANTES:
 - Retorne SOMENTE JSON válido.
 - O score_viralizacao deve ser a SOMA EXATA de:
   hook_impacto + qualidade_visual + clareza_mensagem + legibilidade_texto_legenda + potencial_engajamento.
 - Cada critério vai de 0 a 20.
+- Gere sugestões diferentes conforme o conteúdo visual.
 `;
 
     const payload = {
@@ -214,7 +211,7 @@ REGRAS IMPORTANTES:
         {
           role: "user",
           content: [
-            { type: "input_text", text: "Analise os frames do vídeo e gere o JSON." },
+            { type: "input_text", text: "Analise os frames do vídeo e gere o JSON no schema." },
             ...frames.map((img) => ({
               type: "input_image",
               image_url: img,
@@ -275,16 +272,14 @@ REGRAS IMPORTANTES:
       });
     }
 
-    // 🔒 score determinístico (garantir)
+    // 🔒 garantir score determinístico pela soma
     const c = result.criterios;
-    if (c) {
-      result.score_viralizacao =
-        Number(c.hook_impacto ?? 0) +
-        Number(c.qualidade_visual ?? 0) +
-        Number(c.clareza_mensagem ?? 0) +
-        Number(c.legibilidade_texto_legenda ?? 0) +
-        Number(c.potencial_engajamento ?? 0);
-    }
+    result.score_viralizacao =
+      Number(c?.hook_impacto ?? 0) +
+      Number(c?.qualidade_visual ?? 0) +
+      Number(c?.clareza_mensagem ?? 0) +
+      Number(c?.legibilidade_texto_legenda ?? 0) +
+      Number(c?.potencial_engajamento ?? 0);
 
     await blobPut(cachePath, { result });
 
@@ -296,4 +291,3 @@ REGRAS IMPORTANTES:
     });
   }
 }
-
