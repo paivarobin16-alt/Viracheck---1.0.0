@@ -1,38 +1,15 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import crypto from "crypto";
 import OpenAI from "openai";
-
-export const config = {
-  api: {
-    bodyParser: false,
-  },
-};
+import crypto from "crypto";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
 });
 
-/* ========= helpers ========= */
-
 function json(res: VercelResponse, status: number, data: any) {
   res.status(status).setHeader("Content-Type", "application/json");
   res.end(JSON.stringify(data));
 }
-
-async function readFormData(req: VercelRequest): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (c) => chunks.push(c));
-    req.on("end", () => resolve(Buffer.concat(chunks)));
-    req.on("error", reject);
-  });
-}
-
-function fingerprintFromBuffer(buffer: Buffer) {
-  return crypto.createHash("sha256").update(buffer).digest("hex");
-}
-
-/* ========= handler ========= */
 
 export default async function handler(
   req: VercelRequest,
@@ -43,37 +20,31 @@ export default async function handler(
       return json(res, 405, { error: "Método não permitido" });
     }
 
-    const raw = await readFormData(req);
-    if (!raw || raw.length === 0) {
-      return json(res, 400, { error: "Vídeo não recebido" });
+    const { fingerprint, duration, platform, hook, description } = req.body;
+
+    if (!fingerprint) {
+      return json(res, 400, { error: "Fingerprint ausente" });
     }
 
-    const fingerprint = fingerprintFromBuffer(raw);
-
-    /**
-     * 🔹 Análise textual guiada (estável)
-     * Não usa frames, não usa imagens, não quebra no Vercel
-     */
     const prompt = `
-Você é uma IA especialista em viralização de vídeos curtos (Reels/TikTok/Shorts).
+Você é especialista em viralização de vídeos curtos (Reels/TikTok/Shorts).
 
-Analise o vídeo APENAS conceitualmente, assumindo:
-- Conteúdo curto
-- Formato vertical
-- Público de redes sociais
+Dados do vídeo:
+- Duração: ${duration || "desconhecida"}s
+- Plataforma: ${platform || "todas"}
+- Gancho: ${hook || "não informado"}
+- Descrição: ${description || "não informada"}
 
-Retorne APENAS JSON válido no formato abaixo (sem texto fora do JSON):
+Retorne APENAS JSON válido no formato:
 
 {
   "score": number (0-100),
-  "resumo": string curta,
+  "resumo": string,
   "pontos_fortes": string[],
   "pontos_fracos": string[],
-  "melhorias": string[] (em ordem),
+  "melhorias": string[],
   "musicas": string[]
 }
-
-O score deve variar realisticamente (não fixo).
 `;
 
     const completion = await openai.chat.completions.create({
@@ -82,8 +53,7 @@ O score deve variar realisticamente (não fixo).
       messages: [
         {
           role: "system",
-          content:
-            "Você retorna SOMENTE JSON válido. Nunca texto fora do JSON.",
+          content: "Retorne SOMENTE JSON válido.",
         },
         {
           role: "user",
@@ -95,9 +65,7 @@ O score deve variar realisticamente (não fixo).
     const content = completion.choices?.[0]?.message?.content;
 
     if (!content) {
-      return json(res, 500, {
-        error: "IA não retornou conteúdo",
-      });
+      return json(res, 500, { error: "IA não retornou conteúdo" });
     }
 
     let parsed;
@@ -106,19 +74,7 @@ O score deve variar realisticamente (não fixo).
     } catch {
       return json(res, 500, {
         error: "Resposta da IA não é JSON válido",
-        raw: content.slice(0, 200),
-      });
-    }
-
-    /* validação mínima */
-    if (
-      typeof parsed.score !== "number" ||
-      !Array.isArray(parsed.pontos_fortes) ||
-      !Array.isArray(parsed.pontos_fracos)
-    ) {
-      return json(res, 500, {
-        error: "Formato inválido retornado pela IA",
-        parsed,
+        raw: content,
       });
     }
 
@@ -128,7 +84,7 @@ O score deve variar realisticamente (não fixo).
     });
   } catch (err: any) {
     return json(res, 500, {
-      error: "Falha interna no servidor",
+      error: "Erro interno",
       message: err?.message || String(err),
     });
   }
