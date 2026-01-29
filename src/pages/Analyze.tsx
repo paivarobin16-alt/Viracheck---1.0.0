@@ -28,27 +28,30 @@ export default function Analyze() {
     setResult(null);
 
     try {
-      // hash simples (nome + tamanho)
       const video_hash = `${file.name}_${file.size}`;
 
       const res = await fetch("/api/analyzeVideo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          video_hash,
-          frames: ["placeholder"], // API já usa cache
-        }),
+        body: JSON.stringify({ video_hash }),
       });
 
-      const data = await res.json();
+      const text = await res.text();
+
+      // ⚠️ Proteção TOTAL contra resposta inválida
+      let data: any;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error("A IA retornou uma resposta inválida. Tente novamente.");
+      }
 
       if (!res.ok) {
-        if (data?.details?.includes("rate_limit")) {
-          throw new Error(
-            "Limite da IA atingido. Aguarde alguns segundos e tente novamente."
-          );
-        }
-        throw new Error(data?.error || "Erro inesperado");
+        throw new Error(
+          data?.details ||
+            data?.error ||
+            "Falha na OpenAI. Aguarde alguns segundos e tente novamente."
+        );
       }
 
       setResult(data.result);
@@ -60,11 +63,11 @@ export default function Analyze() {
   }
 
   return (
-    <div className="analyze-page">
-      <div className="card">
-        <h1>🎯 ViraCheck AI</h1>
+    <div className="app-bg">
+      <div className="glass-card">
+        <h1>🚀 ViraCheck AI</h1>
         <p className="subtitle">
-          Upload do vídeo → IA → score + sugestões (PT-BR)
+          Análise inteligente de vídeos para viralização
         </p>
 
         <input
@@ -80,20 +83,26 @@ export default function Analyze() {
         />
 
         {videoURL && (
-          <video src={videoURL} controls className="video-preview" />
+          <video className="video" src={videoURL} controls />
         )}
 
-        <button onClick={handleAnalyze} disabled={loading}>
-          {loading ? "Analisando..." : "Analisar com IA"}
+        <button className="main-btn" onClick={handleAnalyze} disabled={loading}>
+          {loading ? "Analisando com IA..." : "Analisar com IA"}
         </button>
 
-        {loading && <div className="loader">⏳ Analisando vídeo...</div>}
+        {loading && <div className="loader">🤖 Processando vídeo...</div>}
 
-        {error && <div className="error-box">❌ {error}</div>}
+        {error && (
+          <div className="error">
+            ❌ {error}
+          </div>
+        )}
 
         {result && (
-          <div className="result-box">
-            <h2>🔥 Score: {result.score_viralizacao}/100</h2>
+          <div className="result">
+            <div className="score">
+              🔥 Score: <span>{result.score_viralizacao}</span>/100
+            </div>
 
             <p>{result.resumo}</p>
 
@@ -103,18 +112,11 @@ export default function Analyze() {
             <h3>⚠️ Pontos fracos</h3>
             <ul>{result.pontos_fracos.map((p, i) => <li key={i}>{p}</li>)}</ul>
 
-            <h3>🚀 Melhorias práticas</h3>
-            <ul>
-              {result.melhorias_praticas.map((p, i) => (
-                <li key={i}>{p}</li>
-              ))}
-            </ul>
-
-            <h3>🎣 Ganchos</h3>
-            <ul>{result.ganchos.map((g, i) => <li key={i}>{g}</li>)}</ul>
+            <h3>🚀 Melhorias</h3>
+            <ul>{result.melhorias_praticas.map((p, i) => <li key={i}>{p}</li>)}</ul>
 
             <h3>🏷️ Hashtags</h3>
-            <p>{result.hashtags.join(" ")}</p>
+            <p className="tags">{result.hashtags.join(" ")}</p>
           </div>
         )}
       </div>
