@@ -1,4 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { put, head, get } from "@vercel/blob";
 
 /* =========================
    HELPERS HTTP
@@ -33,7 +34,7 @@ function normalizeImageUrl(input: any): string {
   if (s.startsWith("http://") || s.startsWith("https://")) return s;
   if (s.startsWith("data:image/")) return s;
 
-  // base64 puro (sem prefixo)
+  // base64 puro
   if (/^[A-Za-z0-9+/=]+$/.test(s)) {
     const isPng = s.startsWith("iVBOR");
     const mime = isPng ? "image/png" : "image/jpeg";
@@ -43,22 +44,14 @@ function normalizeImageUrl(input: any): string {
   return "";
 }
 
-/* =========================
-   RESPONSES API OUTPUT TEXT
-========================= */
 function extractOutputText(data: any): string {
-  if (typeof data?.output_text === "string" && data.output_text.trim()) {
-    return data.output_text;
-  }
+  if (typeof data?.output_text === "string" && data.output_text.trim()) return data.output_text;
+
   if (Array.isArray(data?.output)) {
     for (const item of data.output) {
       if (item?.type === "message" && Array.isArray(item?.content)) {
         for (const part of item.content) {
-          if (
-            part?.type === "output_text" &&
-            typeof part?.text === "string" &&
-            part.text.trim()
-          ) {
+          if (part?.type === "output_text" && typeof part?.text === "string" && part.text.trim()) {
             return part.text;
           }
         }
@@ -69,50 +62,37 @@ function extractOutputText(data: any): string {
 }
 
 /* =========================
-   VERCEL KV (Upstash Redis)
-   ENV:
-   - KV_REST_API_URL
-   - KV_REST_API_TOKEN
+   BLOB CACHE
+   Env required:
+   - BLOB_READ_WRITE_TOKEN
 ========================= */
-const KV_URL = process.env.KV_REST_API_URL;
-const KV_TOKEN = process.env.KV_REST_API_TOKEN;
+function blobPath(videoHash: string) {
+  return `viracheck/analysis/${videoHash}.json`;
+}
 
-async function kvGet<T>(key: string): Promise<T | null> {
-  if (!KV_URL || !KV_TOKEN) return null;
-
-  const r = await fetch(`${KV_URL}/get/${encodeURIComponent(key)}`, {
-    headers: { Authorization: `Bearer ${KV_TOKEN}` },
-  });
-
-  if (!r.ok) return null;
-  const j = await r.json();
-
-  if (j?.result == null) return null;
+async function blobTryRead(videoHash: string): Promise<any | null> {
+  const path = blobPath(videoHash);
 
   try {
-    return typeof j.result === "string" ? (JSON.parse(j.result) as T) : (j.result as T);
+    // primeiro testa se existe
+    await head(path);
+    // se existe, baixa
+    const file = await get(path);
+    if (!file?.body) return null;
+
+    const text = await file.text();
+    return JSON.parse(text);
   } catch {
-    return j.result as T;
+    return null;
   }
 }
 
-async function kvSet(key: string, value: any, ttlSeconds = 60 * 60 * 24 * 30) {
-  if (!KV_URL || !KV_TOKEN) return;
-
-  const stringValue = JSON.stringify(value);
-
-  await fetch(`${KV_URL}/set/${encodeURIComponent(key)}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${KV_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(stringValue),
-  });
-
-  await fetch(`${KV_URL}/expire/${encodeURIComponent(key)}/${ttlSeconds}`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${KV_TOKEN}` },
+async function blobWrite(videoHash: string, data: any) {
+  const path = blobPath(videoHash);
+  await put(path, JSON.stringify(data), {
+    access: "private",
+    contentType: "application/json",
+    addRandomSuffix: false,
   });
 }
 
@@ -121,24 +101,20 @@ async function kvSet(key: string, value: any, ttlSeconds = 60 * 60 * 24 * 30) {
 ========================= */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
-    if (req.method !== "POST") {
-      return send(res, 405, { error: "Método não permitido. Use POST." });
-    }
+    if (req.method !== "POST") return send(res, 405, { error: "Método não permitido. Use POST." });
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
       return send(res, 500, {
         error: "OPENAI_API_KEY não configurada",
-        details: "Vercel → Project Settings → Environment Variables → OPENAI_API_KEY",
+        details: "Vercel → Project Settings → Environment Variables",
       });
     }
 
-    // KV é obrigatório para manter o mesmo score sempre
-    if (!KV_URL || !KV_TOKEN) {
+    if (!process.env.BLOB_READ_WRITE_TOKEN) {
       return send(res, 500, {
-        error: "Vercel KV não configurado",
-        details:
-          "Crie um KV no Vercel (Storage → KV) e conecte ao projeto para gerar KV_REST_API_URL e KV_REST_API_TOKEN.",
+        error: "BLOB_READ_WRITE_TOKEN não configurado",
+        details: "Vercel → Storage → Blob → Connect → cria a env automaticamente",
       });
     }
 
@@ -154,14 +130,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (!video_hash) return send(res, 400, { error: "video_hash é obrigatório." });
 
-    // ✅ 1) SE JÁ EXISTE, RETORNA IGUAL
-    const key = `viracheck:analysis:${video_hash}`;
-    const cached = await kvGet<any>(key);
+    // ✅ 1) CHECA SE JÁ EXISTE NO BLOB
+    const cached = await blobTryRead(video_hash);
     if (cached?.result) {
       return send(res, 200, { result: cached.result, cached: true });
     }
 
-    // ✅ 2) SE NÃO EXISTE, ANALISA NORMAL
+    // ✅ 2) SE NÃO EXISTE, ANALISA
     const normalizedImages = framesRaw
       .map((f: any) => normalizeImageUrl(f?.image ?? f))
       .filter(Boolean);
@@ -182,7 +157,6 @@ REGRA OBRIGATÓRIA:
   hook_impacto, qualidade_visual, clareza_mensagem,
   legibilidade_texto_legenda, potencial_engajamento.
 
-Use os FRAMES e metadados para diferenciar vídeos.
 Retorne SOMENTE JSON no schema exigido.
 `;
 
@@ -273,7 +247,7 @@ Tarefa:
       },
     };
 
-    const resp = await fetch("https://api.openai.com/v1/responses", {
+    const r = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -282,20 +256,16 @@ Tarefa:
       body: JSON.stringify(payload),
     });
 
-    const raw = await resp.text();
-    if (!resp.ok) {
-      return send(res, resp.status, { error: "Falha na OpenAI API", details: raw.slice(0, 2000) });
-    }
+    const raw = await r.text();
+    if (!r.ok) return send(res, r.status, { error: "Falha na OpenAI API", details: raw.slice(0, 2000) });
 
     const data = JSON.parse(raw);
     const out = extractOutputText(data);
-    if (!out) {
-      return send(res, 500, { error: "OpenAI não retornou texto", details: JSON.stringify(data).slice(0, 1400) });
-    }
+    if (!out) return send(res, 500, { error: "OpenAI não retornou texto", details: JSON.stringify(data).slice(0, 1500) });
 
     const result = JSON.parse(out);
 
-    // valida soma
+    // valida soma do score
     const c = result?.criterios || {};
     const sum =
       (Number(c.hook_impacto) || 0) +
@@ -309,12 +279,12 @@ Tarefa:
       result.observacoes = `${result.observacoes || ""} (Score ajustado pela soma dos critérios.)`.trim();
     }
 
-    // ✅ 3) SALVA PARA RETORNAR IGUAL SEMPRE
-    await kvSet(key, { result });
+    // ✅ 3) SALVA NO BLOB (mesmo vídeo => mesmo resultado)
+    await blobWrite(video_hash, { result });
 
     return send(res, 200, { result, cached: false });
   } catch (err: any) {
-    return send(res, 500, { error: "Erro interno da Function", details: err?.message || String(err) });
+    return send(res, 500, { error: "Erro interno", details: err?.message || String(err) });
   }
 }
 
