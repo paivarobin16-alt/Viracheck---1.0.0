@@ -1,8 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
-/* =========================
-   HTTP helpers
-========================= */
 function send(res: VercelResponse, status: number, data: any) {
   res.status(status);
   res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -21,27 +18,17 @@ function safeJsonParse(text: string) {
 function parseBody(req: VercelRequest): any {
   if (!req.body) return {};
   if (typeof req.body === "object") return req.body;
-  if (typeof req.body === "string") {
-    const j = safeJsonParse(req.body);
-    return j ?? {};
-  }
+  if (typeof req.body === "string") return safeJsonParse(req.body) ?? {};
   return {};
 }
 
-/* =========================
-   Image normalizer
-========================= */
 function normalizeImageUrl(input: any): string {
   if (!input) return "";
   const s = String(input).trim();
-
-  // URL normal
   if (s.startsWith("http://") || s.startsWith("https://")) return s;
-
-  // data URL já ok
   if (s.startsWith("data:image/")) return s;
 
-  // base64 puro -> vira data URL
+  // base64 puro -> data URL
   if (/^[A-Za-z0-9+/=]+$/.test(s)) {
     const isPng = s.startsWith("iVBOR");
     const mime = isPng ? "image/png" : "image/jpeg";
@@ -52,12 +39,8 @@ function normalizeImageUrl(input: any): string {
 }
 
 function extractOutputText(data: any): string {
-  // novo campo pode existir:
-  if (typeof data?.output_text === "string" && data.output_text.trim()) {
-    return data.output_text;
-  }
+  if (typeof data?.output_text === "string" && data.output_text.trim()) return data.output_text;
 
-  // fallback: varre output
   if (Array.isArray(data?.output)) {
     for (const item of data.output) {
       if (item?.type === "message" && Array.isArray(item?.content)) {
@@ -69,7 +52,6 @@ function extractOutputText(data: any): string {
       }
     }
   }
-
   return "";
 }
 
@@ -110,8 +92,62 @@ async function blobPut(path: string, data: any) {
 }
 
 /* =========================
-   Handler
+   JSON Schema (strict)
+   ✅ additionalProperties:false em TODOS objetos
 ========================= */
+const schema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["criterios", "score_viralizacao", "resumo"],
+  properties: {
+    criterios: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "hook_impacto",
+        "qualidade_visual",
+        "clareza_mensagem",
+        "legibilidade_texto_legenda",
+        "potencial_engajamento",
+      ],
+      properties: {
+        hook_impacto: { type: "integer", minimum: 0, maximum: 20 },
+        qualidade_visual: { type: "integer", minimum: 0, maximum: 20 },
+        clareza_mensagem: { type: "integer", minimum: 0, maximum: 20 },
+        legibilidade_texto_legenda: { type: "integer", minimum: 0, maximum: 20 },
+        potencial_engajamento: { type: "integer", minimum: 0, maximum: 20 },
+      },
+    },
+    score_viralizacao: { type: "integer", minimum: 0, maximum: 100 },
+    resumo: { type: "string" },
+    pontos_fortes: {
+      type: "array",
+      items: { type: "string" },
+    },
+    pontos_fracos: {
+      type: "array",
+      items: { type: "string" },
+    },
+    melhorias_praticas: {
+      type: "array",
+      items: { type: "string" },
+    },
+    ganchos: {
+      type: "array",
+      items: { type: "string" },
+    },
+    legendas: {
+      type: "array",
+      items: { type: "string" },
+    },
+    hashtags: {
+      type: "array",
+      items: { type: "string" },
+    },
+    observacoes: { type: "string" },
+  },
+};
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (req.method !== "POST") {
@@ -191,37 +227,7 @@ REGRAS IMPORTANTES:
           type: "json_schema",
           name: "viracheck",
           strict: true,
-          schema: {
-            type: "object",
-            required: ["criterios", "score_viralizacao", "resumo"],
-            properties: {
-              criterios: {
-                type: "object",
-                required: [
-                  "hook_impacto",
-                  "qualidade_visual",
-                  "clareza_mensagem",
-                  "legibilidade_texto_legenda",
-                  "potencial_engajamento",
-                ],
-                properties: {
-                  hook_impacto: { type: "integer", minimum: 0, maximum: 20 },
-                  qualidade_visual: { type: "integer", minimum: 0, maximum: 20 },
-                  clareza_mensagem: { type: "integer", minimum: 0, maximum: 20 },
-                  legibilidade_texto_legenda: { type: "integer", minimum: 0, maximum: 20 },
-                  potencial_engajamento: { type: "integer", minimum: 0, maximum: 20 },
-                },
-              },
-              score_viralizacao: { type: "integer", minimum: 0, maximum: 100 },
-              resumo: { type: "string" },
-              pontos_fortes: { type: "array", items: { type: "string" } },
-              pontos_fracos: { type: "array", items: { type: "string" } },
-              melhorias_praticas: { type: "array", items: { type: "string" } },
-              ganchos: { type: "array", items: { type: "string" } },
-              legendas: { type: "array", items: { type: "string" } },
-              hashtags: { type: "array", items: { type: "string" } },
-            },
-          },
+          schema,
         },
       },
     };
@@ -237,7 +243,6 @@ REGRAS IMPORTANTES:
 
     const raw = await r.text();
 
-    // ✅ devolve o erro REAL da OpenAI pro front (para você enxergar)
     if (!r.ok) {
       return send(res, r.status, {
         error: "OpenAI API error",
@@ -270,7 +275,7 @@ REGRAS IMPORTANTES:
       });
     }
 
-    // 🔒 score determinístico = soma dos critérios
+    // 🔒 score determinístico (garantir)
     const c = result.criterios;
     if (c) {
       result.score_viralizacao =
@@ -291,3 +296,4 @@ REGRAS IMPORTANTES:
     });
   }
 }
+
