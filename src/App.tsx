@@ -1,5 +1,8 @@
-import Analyze from "./pages/Analyze";
-
 export default function App() {
-  return <Analyze />;
+  return (
+    <div style={{ color: "white", padding: 20 }}>
+      <h1>ViraCheck AI</h1>
+      <p>App carregado com sucesso ✅</p>
+    </div>
+  );
 }
